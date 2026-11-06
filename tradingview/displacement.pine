@@ -6,13 +6,17 @@
 //   2. small wicks:   body >= X% of the candle's high-low range
 //   3. strong close:  closes in the outer Y% of the candle (near the high for up)
 //   4. leaves an FVG: the candles either side of it don't overlap   (on by default)
-//   5. breaks structure: closes beyond the recent swing high/low     (optional)
+//   5. breaks structure: closes beyond the last swing high/low       (optional)
+// Structure layer: every BOS / CHoCH is marked from confirmed swing pivots,
+// whether or not the breaking candle is a displacement candle.
+//   BOS   = close beyond the last swing in the trend's direction
+//   CHoCH = first close beyond a swing AGAINST the trend (possible reversal)
 // Because the FVG needs the NEXT candle, a mark appears one bar late (on close
 // of the following candle) and is drawn on the displacement candle itself.
 // Bright = also broke structure. Faded = displacement without a break.
 // Opening price lines (ET): futures daily open 6pm, midnight open, 9:30 NY open.
 // =====================================================================
-indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300, max_lines_count = 100, max_labels_count = 300)
+indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300, max_lines_count = 300, max_labels_count = 400)
 
 len      = input.int(20, "Compare with last N candles", minval = 5)
 bodyK    = input.float(2.0, "Body size (x median body)", minval = 1.0, step = 0.25)
@@ -20,12 +24,21 @@ bodyPct  = input.float(70, "Body % of candle range (min)", minval = 30, maxval =
 closePct = input.float(25, "Close within outer % of candle", minval = 5, maxval = 50)
 needFVG  = input.bool(true, "Must leave a Fair Value Gap")
 needBOS  = input.bool(false, "Must break structure (close beyond swing)")
-swingLen = input.int(10, "Structure: swing lookback (bars)", minval = 3)
 showFVG  = input.bool(true, "Draw the FVG")
 fvgBars  = input.int(15, "FVG box length (bars)", minval = 3)
 paintBar = input.bool(true, "Color the displacement candle")
 colUp    = input.color(color.new(#00e5ff, 0), "Up displacement")
 colDn    = input.color(color.new(#ff4081, 0), "Down displacement")
+
+gS = "Structure (BOS / CHoCH)"
+pivLen   = input.int(5, "Swing strength (bars each side)", minval = 2, maxval = 20, group = gS)
+showStr  = input.bool(true, "Mark BOS / CHoCH", group = gS)
+showSw   = input.bool(false, "Mark swing highs / lows", group = gS)
+colBosU  = input.color(color.new(color.lime, 10), "BOS up", group = gS, inline = "b")
+colBosD  = input.color(color.new(color.red, 10), "BOS down", group = gS, inline = "b")
+colChU   = input.color(color.new(#b388ff, 0), "CHoCH up", group = gS, inline = "c")
+colChD   = input.color(color.new(#ff9800, 0), "CHoCH down", group = gS, inline = "c")
+keepStr  = input.int(40, "Keep last N breaks", minval = 5, maxval = 200, group = gS)
 
 gO = "Opening prices (ET)"
 showDO   = input.bool(true, "Daily open (6:00pm, futures day)", group = gO, inline = "do")
@@ -36,6 +49,59 @@ showNY   = input.bool(true, "NY open (9:30am)", group = gO, inline = "ny")
 colNY    = input.color(color.new(color.yellow, 10), "", group = gO, inline = "ny")
 keepDays = input.int(3, "Keep lines for last N days", minval = 1, maxval = 20, group = gO)
 
+// ---------------------------------------------------------------- structure
+var float lastSH = na
+var int   lastSHb = na
+var bool  shDone = true
+var float lastSL = na
+var int   lastSLb = na
+var bool  slDone = true
+var int   trend  = 0        // 1 up, -1 down, 0 unknown
+var array<line>  strL = array.new<line>()
+var array<label> strT = array.new<label>()
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+if not na(ph)
+    lastSH := ph
+    lastSHb := bar_index - pivLen
+    shDone := false
+if not na(pl)
+    lastSL := pl
+    lastSLb := bar_index - pivLen
+    slDone := false
+plotshape(showSw and not na(ph), "Swing high", shape.circle, location.abovebar, color.new(color.gray, 30), offset = -pivLen, size = size.auto)
+plotshape(showSw and not na(pl), "Swing low", shape.circle, location.belowbar, color.new(color.gray, 30), offset = -pivLen, size = size.auto)
+
+markBreak(int x1, float y, string txt, color col, bool up) =>
+    array.push(strL, line.new(x1, y, bar_index, y, color = col, style = line.style_dotted, width = 1))
+    array.push(strT, label.new(int(math.round((x1 + bar_index) / 2)), y, txt, style = up ? label.style_label_down : label.style_label_up,
+         color = color.new(color.black, 100), textcolor = col, size = size.small))
+    if array.size(strL) > keepStr
+        line.delete(array.shift(strL))
+        label.delete(array.shift(strT))
+
+brkUp = false
+brkDn = false
+chUp  = false
+chDn  = false
+if barstate.isconfirmed
+    if not shDone and close > lastSH
+        shDone := true
+        brkUp := true
+        chUp := trend == -1
+        if showStr
+            markBreak(lastSHb, lastSH, chUp ? "CHoCH" : "BOS", chUp ? colChU : colBosU, true)
+        trend := 1
+    if not slDone and close < lastSL
+        slDone := true
+        brkDn := true
+        chDn := trend == 1
+        if showStr
+            markBreak(lastSLb, lastSL, chDn ? "CHoCH" : "BOS", chDn ? colChD : colBosD, false)
+        trend := -1
+
+// ---------------------------------------------------------------- displacement
 body   = math.abs(close - open)
 rng    = high - low
 medB   = ta.percentile_nearest_rank(body, len, 50)
@@ -51,10 +117,8 @@ upClose = c_rng > 0 and (high[1] - close[1]) / c_rng * 100 <= closePct
 dnClose = c_rng > 0 and (close[1] - low[1]) / c_rng * 100 <= closePct
 fvgUp   = low > high[2]
 fvgDn   = high < low[2]
-swingH  = ta.highest(high, swingLen)[2]
-swingL  = ta.lowest(low, swingLen)[2]
-bosUp   = close[1] > swingH
-bosDn   = close[1] < swingL
+bosUp   = brkUp[1]          // the displacement candle itself broke structure
+bosDn   = brkDn[1]
 
 dispUp = upC and bigBody and solid and upClose and (not needFVG or fvgUp) and (not needBOS or bosUp)
 dispDn = dnC and bigBody and solid and dnClose and (not needFVG or fvgDn) and (not needBOS or bosDn)
@@ -76,6 +140,10 @@ alertcondition(dispUp, "Up displacement", "Up displacement candle on {{ticker}} 
 alertcondition(dispDn, "Down displacement", "Down displacement candle on {{ticker}} ({{interval}})")
 alertcondition(dispUp and bosUp, "Up displacement + BOS", "Up displacement + structure break on {{ticker}} ({{interval}})")
 alertcondition(dispDn and bosDn, "Down displacement + BOS", "Down displacement + structure break on {{ticker}} ({{interval}})")
+alertcondition(brkUp and not chUp, "BOS up", "BOS up on {{ticker}} ({{interval}})")
+alertcondition(brkDn and not chDn, "BOS down", "BOS down on {{ticker}} ({{interval}})")
+alertcondition(chUp, "CHoCH up", "CHoCH up (bullish) on {{ticker}} ({{interval}})")
+alertcondition(chDn, "CHoCH down", "CHoCH down (bearish) on {{ticker}} ({{interval}})")
 
 // ---------------------------------------------------------------- opening price lines
 TZ = "America/New_York"

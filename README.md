@@ -44,7 +44,11 @@ It sends an alert for each of these events:
 
 ## Displacement Candles (separate indicator)
 
-**File:** `tradingview/displacement.pine`. Marks candles with a body at least 2× the median body of the last 20 candles, a body that's at least 70% of the candle's range, a close in the outer 25% of the candle, and a Fair Value Gap left behind. The mark appears when the next candle closes, since that candle completes the FVG. Bright marks also broke structure (closed beyond the 10-bar swing); faded marks didn't. On 5m MNQ (Sep–Oct 2026, all sessions) that's about 19 marks a day, about 10 of them with a structure break.
+**File:** `tradingview/displacement.pine`. Marks candles with a body at least 2× the median body of the last 20 candles, a body that's at least 70% of the candle's range, a close in the outer 25% of the candle, and a Fair Value Gap left behind. The mark appears when the next candle closes, since that candle completes the FVG. Bright marks also broke structure (BOS or CHoCH); faded marks didn't. On 5m MNQ (Sep–Oct 2026, all sessions) that's about 19 displacement marks a day.
+
+It also marks **every** structure break from confirmed swing pivots (5 bars each side), whether or not the breaking candle is a displacement candle: **BOS** is a close beyond the last swing in the trend's direction, and **CHoCH** is the first close beyond a swing against the trend. Each break gets a dotted line from the swing to the break. There are alerts for BOS and CHoCH in both directions.
+
+Opening price lines (ET): daily open at 6pm, midnight open, and NY open at 9:30.
 
 ## Checking the boxes
 

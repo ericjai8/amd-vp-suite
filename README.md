@@ -6,6 +6,8 @@ A TradingView Pine v6 strategy that combines a built-in volume profile with ICT'
 
 ## How the setup works
 
+Rules are set in minutes, not bars, so they behave the same on 1m, 5m, or 30m. The defaults are tuned for 5m.
+
 | Step | What the script looks for |
 |---|---|
 | **A: Accumulation** | Inside a search window (default: Asia, 6pm to 2am ET), it finds the latest tight range. It walks back from the end of the window, stopping where the last strong move (impulse leg) ended, while the candles stay sideways: the range is no taller than 8 median candles, the efficiency (net move ÷ distance travelled) stays at or below 0.30, and a smooth curve can't explain the movement (quadratic-fit R² ≤ 0.40), which rules out grinds, V's and rounded arcs. The range has to be at least 12 bars long, and each edge has to be tested at least twice. If any rule fails, the script draws "no accumulation" and doesn't look for AMD that day. It profiles the range it found, works out POC, VAH, and VAL, and draws the profile with buy volume and sell volume in separate colors. |

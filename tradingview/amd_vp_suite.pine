@@ -1,6 +1,6 @@
 //@version=6
 // =====================================================================
-// AMD + Volume Profile Suite  [MNQ]   v2
+// AMD + Volume Profile Suite  [MNQ]   v3 (rules in minutes, works on any timeframe)
 //
 // 1. ACCUMULATION  Inside a search window (default Asia, 6pm-2am ET) the script
 //                  finds the LATEST TIGHT RANGE before the window ends:
@@ -44,12 +44,12 @@ gQ = "Accumulation detection"
 accMode    = input.string("Auto-fit (latest tight range)", "Mode", options = ["Auto-fit (latest tight range)", "Whole window"], group = gQ)
 maxHgtK    = input.float(8.0, "Max range height (x median candle)", minval = 2, step = 0.5, group = gQ, tooltip = "Range height divided by the median candle (high-low) inside it. Sideways ranges are only a handful of candles tall; a trend leg is many.")
 maxER      = input.float(0.30, "Max efficiency (0 = chop, 1 = straight line)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Net close-to-close move divided by the total distance travelled. Sideways candles go back and forth, so this stays low.")
-impBars    = input.int(6, "Stop at an impulse leg: bars", minval = 2, maxval = 30, group = gQ, tooltip = "Accumulation starts where the last strong move ends. Walking back, the box stops if the N bars before a point moved hard in one direction.")
+impMin     = input.int(30, "Stop at an impulse leg: minutes", minval = 5, group = gQ, tooltip = "Accumulation starts where the last strong move ends. Walking back, the box stops if the N minutes before a point moved hard in one direction.")
 impK       = input.float(4.0, "Impulse size (x median candle)", minval = 1.0, step = 0.5, group = gQ)
 impER      = input.float(0.5, "Impulse straightness (efficiency)", minval = 0.1, maxval = 1.0, step = 0.05, group = gQ)
 maxShape   = input.float(0.40, "Max trend/arc shape (curve fit R²)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "How much of the movement a smooth curve explains. Grinds, V's and rounded arcs fit a curve (high); real ranges are noise around a flat middle (low).")
-minAccBars = input.int(12, "Min length (bars)", minval = 3, group = gQ, tooltip = "12 bars = 1 hour on 5m.")
-endSlack   = input.int(24, "Range may end up to N bars before the window ends", minval = 0, maxval = 200, group = gQ, tooltip = "Auto-fit tries every end point in the last N bars of the window and keeps the LONGEST tight range. 24 bars = 2 hours on 5m. Stops a late pre-London move from hiding the range.")
+minAccMin  = input.int(60, "Min length (minutes)", minval = 5, group = gQ, tooltip = "Rules are in minutes so they mean the same thing on 1m, 5m or 30m. Never fewer than 4 bars.")
+endSlackMin = input.int(120, "Range may end up to N minutes before the window ends", minval = 0, group = gQ, tooltip = "Tries every end point in the last N minutes of the window and keeps the longest valid range.")
 minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ, tooltip = "Separate visits to the top and bottom of the range. This is what builds the liquidity a sweep goes after.")
 touchPct   = input.float(20, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ, tooltip = "A bar 'tests' an edge if it trades within this % of the range from the high or low.")
 
@@ -64,9 +64,9 @@ colDn    = input.color(color.new(#ff9800, 20), "Sell volume", group = gV)
 gA = "AMD rules"
 sweepTicks  = input.int(2, "Sweep: min ticks beyond range", minval = 1, group = gA)
 maxDepthPct = input.float(75, "Sweep: max depth (% of range height)", minval = 10, maxval = 300, group = gA, tooltip = "Deeper than this = a real breakout, not a grab.")
-reclaimBars = input.int(6, "Reclaim within (bars)", minval = 1, maxval = 30, group = gA)
+reclaimMin  = input.int(30, "Reclaim within (minutes)", minval = 1, group = gA)
 retestTicks = input.int(8, "POC retest tolerance (ticks)", minval = 0, group = gA)
-retestBars  = input.int(36, "Retest must come within (bars)", minval = 3, group = gA)
+retestMin   = input.int(180, "Retest must come within (minutes)", minval = 5, group = gA)
 failCloses  = input.int(2, "Failed retest = closes beyond POC", minval = 1, maxval = 5, group = gA)
 
 gR = "Stop, size & targets"
@@ -94,6 +94,14 @@ showLevels = input.bool(true, "POC / VAH / VAL lines", group = gD)
 showDash   = input.bool(true, "Dashboard", group = gD)
 
 // ---------------------------------------------------------------- basics
+tfSec = timeframe.in_seconds()
+toBars(int mins, int floorBars) =>
+    math.max(floorBars, int(math.ceil(mins * 60.0 / tfSec)))
+minAccBars  = toBars(minAccMin, 4)
+endSlack    = toBars(endSlackMin, 0)
+impBars     = toBars(impMin, 2)
+reclaimBars = toBars(reclaimMin, 1)
+retestBars  = toBars(retestMin, 2)
 tick  = syminfo.mintick
 atr   = ta.atr(14)
 inAcc   = not na(time(timeframe.period, accSess, TZ))

@@ -30,15 +30,20 @@ strategy("AMD + VP Suite [MNQ]", shorttitle = "AMD VP", overlay = true,
 // ---------------------------------------------------------------- inputs
 TZ = "America/New_York"
 gS = "Sessions (ET)"
-accSess   = input.session("1800-0200", "Accumulation window", group = gS, tooltip = "The range that gets profiled. Default = Asia. For London accumulation try 0200-0830; for NY open range 0930-1000.")
+accSess   = input.session("2000-0200", "Accumulation window", group = gS, tooltip = "The range that gets profiled. Default = Asia after the 6-8pm ET open volatility. For London accumulation try 0200-0830; for NY open range 0930-1000.")
 tradeSess = input.session("0200-1655", "Trade window (sweeps, entries)", group = gS)
 flatHM    = input.int(1655, "Flat all trades at (HHMM ET)", group = gS)
+
+gQ = "Accumulation check"
+useCheck   = input.bool(true, "Require a real range (skip trending sessions)", group = gQ)
+maxRngATR  = input.float(4.0, "Max range height (x 1H ATR)", minval = 1.0, step = 0.5, group = gQ, tooltip = "A window wider than this is a trend, not accumulation.")
+maxTrend   = input.float(0.6, "Max net move (% of range)", minval = 0.2, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Open-to-close move of the window divided by its range. A trending window moves most of its range in one direction.")
 
 gV = "Volume profile"
 rows     = input.int(40, "Rows", minval = 10, maxval = 100, group = gV)
 vaPct    = input.float(70, "Value area %", minval = 50, maxval = 95, group = gV)
 showVP   = input.bool(true, "Draw profile", group = gV)
-vpWidth  = input.int(30, "Profile width (bars)", minval = 5, maxval = 150, group = gV)
+vpWidth  = input.int(15, "Profile width (bars)", minval = 5, maxval = 150, group = gV)
 colUp    = input.color(color.new(#2962ff, 20), "Buy volume", group = gV)
 colDn    = input.color(color.new(#ff9800, 20), "Sell volume", group = gV)
 
@@ -79,6 +84,7 @@ hmNow   = hour(time, TZ) * 100 + minute(time, TZ)
 accStart = inAcc and not inAcc[1]
 accEnd   = not inAcc and inAcc[1]
 
+atr1h = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
 pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
 pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
 
@@ -88,12 +94,14 @@ var array<float> aL = array.new<float>()
 var array<float> aV = array.new<float>()
 var array<bool>  aUp = array.new<bool>()
 var int accBar0 = na
+var float accOpen = na
 if accStart
     array.clear(aH)
     array.clear(aL)
     array.clear(aV)
     array.clear(aUp)
     accBar0 := bar_index
+    accOpen := open
 if inAcc
     array.push(aH, high)
     array.push(aL, low)
@@ -122,7 +130,26 @@ var int   pocBar   = na
 var int   failCnt  = 0
 var string stTxt   = "waiting for accumulation"
 
-if accEnd and array.size(aH) > 2
+bool accOK = true
+string accWhy = ""
+if accEnd and array.size(aH) > 2 and useCheck
+    hgt = array.max(aH) - array.min(aL)
+    netMove = math.abs(close[1] - accOpen)
+    if not na(atr1h) and hgt > maxRngATR * atr1h
+        accOK := false
+        accWhy := "range " + str.tostring(hgt / atr1h, "#.#") + "x 1H ATR"
+    else if hgt > 0 and netMove / hgt > maxTrend
+        accOK := false
+        accWhy := "trended " + str.tostring(100 * netMove / hgt, "#") + "% of range"
+if accEnd and array.size(aH) > 2 and not accOK
+    box.new(accBar0, array.max(aH), bar_index - 1, array.min(aL), border_color = color.new(color.gray, 50), border_style = line.style_dashed,
+         bgcolor = color.new(color.gray, 96), text = "no accumulation: " + accWhy, text_color = color.gray, text_size = size.small,
+         text_halign = text.align_left, text_valign = text.align_top)
+    poc := na
+    st := 0
+    dir := 0
+    stTxt := "no accumulation today (" + accWhy + ")"
+if accEnd and array.size(aH) > 2 and accOK
     rngH := array.max(aH)
     rngL := array.min(aL)
     float step = (rngH - rngL) / rows
@@ -177,7 +204,7 @@ if accEnd and array.size(aH) > 2
                 if wTot - wUp > 0
                     array.push(vpBoxes, box.new(accBar0 + wUp, y2, accBar0 + wTot, y1, border_color = na, bgcolor = colDn))
         accBox := box.new(accBar0, rngH, bar_index - 1, rngL, border_color = color.new(color.gray, 40),
-             bgcolor = color.new(color.gray, 92), text = "A", text_color = color.gray, text_halign = text.align_right, text_valign = text.align_top)
+             bgcolor = color.new(color.gray, 92), text = "A", text_color = color.gray, text_size = size.normal, text_halign = text.align_right, text_valign = text.align_top)
         if showLevels
             lPOC := line.new(accBar0, poc, bar_index, poc, color = color.new(color.red, 0), width = 2, extend = extend.right)
             lVAH := line.new(accBar0, vah, bar_index, vah, color = color.new(color.white, 20), extend = extend.right)

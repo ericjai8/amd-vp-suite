@@ -10,7 +10,7 @@ Rules are set in minutes, not bars, so they behave the same on 1m, 5m, or 30m. T
 
 | Step | What the script looks for |
 |---|---|
-| **A: Accumulation** | Checked on every bar, in any session. Working back from the current bar, the recent bars count as accumulation when all of these hold: the range starts where the last impulse leg ended, it's no taller than 8 median candles, it's choppy (efficiency ≤ 0.30), it has no trend or arc shape (quadratic-fit R² ≤ 0.40), it lasts at least 60 minutes, and both edges have been tested at least twice. A dotted box shows the range while it forms. When price trades beyond it, the range is locked in as **A**, and its volume profile (POC, VAH, VAL) is drawn with buy and sell volume in separate colors. |
+| **A: Accumulation** | Checked on every bar, in any session. Working back from the current bar, the recent bars count as accumulation when all of these hold: the range starts where the last impulse leg ended, it's no taller than 8 median candles (median measured over the last 24 hours, so sweep candles can't loosen it), it's choppy (efficiency ≤ 0.30), it has no trend or arc shape (quadratic-fit R² ≤ 0.40), it lasts at least 60 minutes, and both edges have been tested at least twice. Opening bars that stick out of the range's core (its last two-thirds) are trimmed off, since they're the tail of the move before the chop. When price breaks the most recent valid range (if it was valid within the last 60 minutes), that range is locked in as **A**, as long as it isn't a V or U shape (the middle third has to sit mid-box). Its volume profile (POC, VAH, VAL) is drawn with buy and sell volume in separate colors. A dotted box shows the range while it forms. |
 | **M: Manipulation** | Price sweeps beyond the range by at least 2 ticks and no deeper than 75% of the range height. It then closes back inside the range within 30 minutes. If it goes deeper, or doesn't come back in time, it's treated as a real breakout and the script resumes scanning. |
 | **D: Distribution** | Price closes beyond the POC in the direction of the reclaim. |
 | **✓ POC: retest confirmed** | Price pulls back to within 8 ticks of the POC and closes back on the right side. The script enters on that close. |
@@ -40,6 +40,10 @@ It sends an alert for each of these events:
 - Confirmed entry, with the stop, T1, and T2
 - Failed retest
 - Invalid setup
+
+## Checking the boxes
+
+`research/continuous_sim.py` runs the same detection logic in Python on 5m MNQ data and saves `research/continuous_samples.png` (16 sample A boxes). On Sep–Oct 2026, about 12 of 16 samples were clean sideways chop with the lead-in move excluded; the misses were wide U shapes or ranges that drifted at one end.
 
 ## Status
 

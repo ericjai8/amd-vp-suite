@@ -1,6 +1,6 @@
 //@version=6
 // =====================================================================
-// AMD + Volume Profile Suite  [MNQ]   v4: continuous detection, any session
+// AMD + Volume Profile Suite  [MNQ]   v5: tighter A box (chop only), any session
 //
 // 1. ACCUMULATION  Checked on EVERY bar: do the most recent bars form a sideways
 //                  range? Walking back from the current bar, the range
@@ -10,6 +10,12 @@
 //                    - is choppy: efficiency (net move / path) <= max
 //                    - has no trend/arc shape: quadratic-fit R² <= max
 //                    - lasts at least the minimum time, both edges tested
+//                    - opening bars that stick out of the core (the tail of the
+//                      prior move) are trimmed off
+//                    - no V or U: the middle third sits mid-box
+//                  The median candle is measured over 24 hours, so sweep candles
+//                  can't loosen the limits. The last valid range is remembered for
+//                  a while, so a break locks THAT range, not a grown one.
 //                  A dotted box shows the range while it is forming.
 // 2. MANIPULATION  Price trades beyond the range (that locks it in as "A": volume
 //                  profile, POC, VAH, VAL), then CLOSES back inside in time.
@@ -46,6 +52,9 @@ impK       = input.float(4.0, "Impulse size (x median candle)", minval = 1.0, st
 impER      = input.float(0.5, "Impulse straightness (efficiency)", minval = 0.1, maxval = 1.0, step = 0.05, group = gQ)
 minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ)
 touchPct   = input.float(20, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ)
+trimTol    = input.float(0.15, "Lead-in trim tolerance (% of core height / 100)", minval = 0.0, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Opening bars that poke this far outside the range's core (its last 2/3) are dropped: that's the tail of the move before the chop.")
+midBand    = input.float(0.25, "V/U check: middle third must sit between", minval = 0.0, maxval = 0.45, step = 0.05, group = gQ, tooltip = "Average close of the middle third must be between this fraction and 1 minus it of the box height. Rejects V and U shapes.")
+staleMin   = input.int(60, "Remember last valid range (minutes)", minval = 0, group = gQ, tooltip = "If price breaks a range that was valid within this time, that range is locked as A.")
 showForming = input.bool(true, "Show the range while it forms (dotted)", group = gQ)
 
 gV = "Volume profile"
@@ -98,7 +107,8 @@ minAccBars  = toBars(minAccMin, 4)
 impBars     = toBars(impMin, 2)
 reclaimBars = toBars(reclaimMin, 1)
 retestBars  = toBars(retestMin, 2)
-medLen      = math.max(20, minAccBars * 2)
+medLen      = math.min(toBars(1440, 20), 1500)   // 24h of candles
+staleBars   = toBars(staleMin, 0)
 
 tick  = syminfo.mintick
 atr   = ta.atr(14)
@@ -166,8 +176,29 @@ if bar_index > maxLook + impBars + 2 and medC > 0
                     r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0.0
                     if r2 <= maxShape
                         rLen := len
-                        rHi := hh
-                        rLo := ll
+    // lead-in trim: drop opening bars that stick out of the core (last 2/3)
+    if rLen > 0
+        cOff = int(2 * rLen / 3)
+        float cH = high
+        float cL = low
+        for k = 0 to cOff
+            cH := math.max(cH, high[k])
+            cL := math.min(cL, low[k])
+        tol = trimTol * (cH - cL)
+        int sOff = rLen - 1
+        while sOff > cOff and (high[sOff] > cH + tol or low[sOff] < cL - tol)
+            sOff -= 1
+        if sOff + 1 >= minAccBars
+            rLen := sOff + 1
+            float th = high
+            float tl = low
+            for k = 0 to sOff
+                th := math.max(th, high[k])
+                tl := math.min(tl, low[k])
+            rHi := th
+            rLo := tl
+        else
+            rLen := 0
 
 // edge tests of a range covering bars [off, off + len - 1] bars back
 edgeTests(int off, int len, float hi, float lo) =>
@@ -187,6 +218,17 @@ edgeTests(int off, int len, float hi, float lo) =>
         inL := nowL
     [tH, tL]
 
+// V / U check: where the middle third's average close sits in the box (0 = low, 1 = high)
+midPos(int off, int len, float hi, float lo) =>
+    i0 = int(len / 3)
+    i1 = int(2 * len / 3)
+    float sum = 0.0
+    int n = 0
+    for i = i0 to i1
+        sum += close[off + len - 1 - i]
+        n += 1
+    hi > lo and n > 0 ? (sum / n - lo) / (hi - lo) : 0.5
+
 // ---------------------------------------------------------------- state
 var float aHi = na
 var float aLo = na
@@ -198,6 +240,10 @@ var line lPOC = na
 var line lVAH = na
 var line lVAL = na
 var box formBox = na
+var int   lastLen = 0      // last valid range: length, high, low, bar it ended on
+var float lastHi  = na
+var float lastLo  = na
+var int   lastEnd = na
 // 0 scanning, 2 swept (wait reclaim), 3 manipulation (wait POC), 4 beyond POC (wait retest),
 // 5 traded / done, 6 failed, 7 invalid / breakout
 var int   st       = 0
@@ -213,17 +259,17 @@ amdLbl(string txt, color col, bool atHigh) =>
     label.new(bar_index, atHigh ? high : low, txt, style = atHigh ? label.style_label_down : label.style_label_up,
          color = col, textcolor = color.white, size = size.small)
 
-// lock in the range that ended on the previous bar: profile, levels, box
-lockRange(int len) =>
-    float hi = high[1]
-    float lo = low[1]
-    for k = 1 to len
+// lock in the range covering bars [off, off + len - 1] back: profile, levels, box
+lockRange(int off, int len) =>
+    float hi = high[off]
+    float lo = low[off]
+    for k = off to off + len - 1
         hi := math.max(hi, high[k])
         lo := math.min(lo, low[k])
     float step = (hi - lo) / rows
     up = array.new<float>(rows, 0.0)
     dn = array.new<float>(rows, 0.0)
-    for k = 1 to len
+    for k = off to off + len - 1
         r0 = math.max(0, math.min(rows - 1, int(math.floor((low[k] - lo) / step))))
         r1 = math.max(0, math.min(rows - 1, int(math.floor((high[k] - lo) / step))))
         share = volume[k] / (r1 - r0 + 1)
@@ -249,7 +295,7 @@ lockRange(int len) =>
         else
             vlo -= 1
             acc += nxtDn
-    b0 = bar_index - len
+    b0 = bar_index - off - len + 1
     if showVP
         while array.size(vpBoxes) > rows * 6
             box.delete(array.shift(vpBoxes))
@@ -263,7 +309,7 @@ lockRange(int len) =>
                 array.push(vpBoxes, box.new(b0, y2, b0 + wUp, y1, border_color = na, bgcolor = colUp))
             if wTot - wUp > 0
                 array.push(vpBoxes, box.new(b0 + wUp, y2, b0 + wTot, y1, border_color = na, bgcolor = colDn))
-    box.new(b0, hi, bar_index - 1, lo, border_color = color.new(color.gray, 40), bgcolor = color.new(color.gray, 92),
+    box.new(b0, hi, bar_index - off, lo, border_color = color.new(color.gray, 40), bgcolor = color.new(color.gray, 92),
          text = "A", text_color = color.gray, text_size = size.normal, text_halign = text.align_right, text_valign = text.align_top)
     [hi, lo, lo + (pr + 0.5) * step, lo + (vhi + 1) * step, lo + vlo * step, b0]
 
@@ -340,13 +386,21 @@ if barstate.isconfirmed
     if (st == 5 or st == 6 or st == 7) and pos == 0 and bar_index > doneBar
         st := 0
         stTxt := "scanning for accumulation"
-    // 0 -> 2: a valid range ended on the previous bar and this bar trades beyond it
-    if st == 0 and rLen[1] >= minAccBars and not noEntryTime
-        breakDn = low <= rLo[1] - sweepTicks * tick and tradeLong
-        breakUp = high >= rHi[1] + sweepTicks * tick and tradeShort
+    // remember the most recent valid range
+    if st == 0 and rLen[1] >= minAccBars
+        lastLen := rLen[1]
+        lastHi := rHi[1]
+        lastLo := rLo[1]
+        lastEnd := bar_index - 1
+    // 0 -> 2: price trades beyond the last valid range (if it is recent)
+    if st == 0 and lastLen > 0 and bar_index - 1 - lastEnd <= staleBars and not noEntryTime
+        breakDn = low <= lastLo - sweepTicks * tick and tradeLong
+        breakUp = high >= lastHi + sweepTicks * tick and tradeShort
         if breakDn or breakUp
-            [tH, tL] = edgeTests(1, rLen[1], rHi[1], rLo[1])
-            if tH >= minTouches and tL >= minTouches
+            off = bar_index - lastEnd
+            [tH, tL] = edgeTests(off, lastLen, lastHi, lastLo)
+            mp = midPos(off, lastLen, lastHi, lastLo)
+            if tH >= minTouches and tL >= minTouches and mp >= midBand and mp <= 1 - midBand
                 if not na(lPOC)
                     line.set_extend(lPOC, extend.none)
                     line.set_x2(lPOC, bar_index)
@@ -354,7 +408,8 @@ if barstate.isconfirmed
                     line.set_x2(lVAH, bar_index)
                     line.set_extend(lVAL, extend.none)
                     line.set_x2(lVAL, bar_index)
-                [hi_, lo_, poc_, vah_, val_, b0_] = lockRange(rLen[1])
+                [hi_, lo_, poc_, vah_, val_, b0_] = lockRange(off, lastLen)
+                lastLen := 0
                 aHi := hi_
                 aLo := lo_
                 poc := poc_

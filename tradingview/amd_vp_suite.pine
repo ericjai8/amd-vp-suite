@@ -1,0 +1,425 @@
+//@version=6
+// =====================================================================
+// AMD + Volume Profile Suite  [MNQ]
+//
+// 1. ACCUMULATION  A session you choose (default Asia 6pm-2am ET) is profiled:
+//                  built-in volume profile -> POC, VAH, VAL, range high/low.
+// 2. MANIPULATION  After that session, price sweeps beyond the range (takes the
+//                  liquidity) and CLOSES back inside within N bars.
+// 3. DISTRIBUTION  Price closes beyond the POC in the reclaim direction.
+// 4. POC RETEST    Price pulls back to the POC:
+//                    closes back on the right side  -> CONFIRMED -> entry
+//                    2 closes on the wrong side      -> FAILED
+//                    close beyond the sweep extreme  -> INVALID (not AMD)
+// Entry  at the close of the confirmed retest candle.
+// Stop   beyond the retest candle (and the POC) + buffer.
+// Targets the next untaken liquidity: swing highs/lows, range high/low, PDH/PDL.
+//        T1 must be >= Min R:R or the trade is skipped.
+// Exits  T1 part, rest to T2, stop -> breakeven after T1, flat at 4:55pm ET.
+//
+// NOT BACKTESTED outside TradingView. Use Strategy Tester + paper trading to
+// judge it. Every signal is on a closed bar; nothing repaints.
+// =====================================================================
+strategy("AMD + VP Suite [MNQ]", shorttitle = "AMD VP", overlay = true,
+     initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 3,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.62,
+     slippage = 1, process_orders_on_close = true, pyramiding = 0,
+     margin_long = 0, margin_short = 0,
+     max_boxes_count = 500, max_lines_count = 300, max_labels_count = 300, max_bars_back = 2000)
+
+// ---------------------------------------------------------------- inputs
+TZ = "America/New_York"
+gS = "Sessions (ET)"
+accSess   = input.session("1800-0200", "Accumulation window", group = gS, tooltip = "The range that gets profiled. Default = Asia. For London accumulation try 0200-0830; for NY open range 0930-1000.")
+tradeSess = input.session("0200-1655", "Trade window (sweeps, entries)", group = gS)
+flatHM    = input.int(1655, "Flat all trades at (HHMM ET)", group = gS)
+
+gV = "Volume profile"
+rows     = input.int(40, "Rows", minval = 10, maxval = 100, group = gV)
+vaPct    = input.float(70, "Value area %", minval = 50, maxval = 95, group = gV)
+showVP   = input.bool(true, "Draw profile", group = gV)
+vpWidth  = input.int(30, "Profile width (bars)", minval = 5, maxval = 150, group = gV)
+colUp    = input.color(color.new(#2962ff, 20), "Buy volume", group = gV)
+colDn    = input.color(color.new(#ff9800, 20), "Sell volume", group = gV)
+
+gA = "AMD rules"
+sweepTicks  = input.int(2, "Sweep: min ticks beyond range", minval = 1, group = gA)
+maxDepthATR = input.float(2.0, "Sweep: max depth (x ATR)", minval = 0.5, step = 0.25, group = gA, tooltip = "Deeper than this = a real breakout, not a grab.")
+reclaimBars = input.int(6, "Reclaim within (bars)", minval = 1, maxval = 30, group = gA)
+retestTicks = input.int(8, "POC retest tolerance (ticks)", minval = 0, group = gA, tooltip = "How close to the POC the pullback must get.")
+retestBars  = input.int(36, "Retest must come within (bars)", minval = 3, group = gA)
+failCloses  = input.int(2, "Failed retest = closes beyond POC", minval = 1, maxval = 5, group = gA)
+
+gR = "Risk & targets"
+stopTicks  = input.int(4, "Stop buffer (ticks)", minval = 0, group = gR)
+minRR      = input.float(1.5, "Min R:R to T1", minval = 0.5, step = 0.25, group = gR)
+t1Qty      = input.int(2, "Contracts at T1", minval = 0, group = gR, tooltip = "The rest go to T2.")
+beAfterT1  = input.bool(true, "Stop to breakeven after T1", group = gR)
+tradeLong  = input.bool(true, "Take longs", group = gR)
+tradeShort = input.bool(true, "Take shorts", group = gR)
+
+gL = "Liquidity"
+pivLen     = input.int(5, "Swing strength", minval = 2, maxval = 20, group = gL)
+maxLiq     = input.int(10, "Max untaken swings per side", minval = 2, maxval = 30, group = gL)
+showLiq    = input.bool(true, "Draw liquidity lines", group = gL)
+showPD     = input.bool(true, "PDH / PDL", group = gL)
+colBSL     = input.color(color.new(color.lime, 30), "Buy-side liquidity (above highs)", group = gL)
+colSSL     = input.color(color.new(color.red, 30), "Sell-side liquidity (below lows)", group = gL)
+
+gD = "Display"
+showLevels = input.bool(true, "POC / VAH / VAL lines", group = gD)
+showDash   = input.bool(true, "Dashboard", group = gD)
+
+// ---------------------------------------------------------------- basics
+tick  = syminfo.mintick
+atr   = ta.atr(14)
+inAcc   = not na(time(timeframe.period, accSess, TZ))
+inTrade = not na(time(timeframe.period, tradeSess, TZ))
+hmNow   = hour(time, TZ) * 100 + minute(time, TZ)
+accStart = inAcc and not inAcc[1]
+accEnd   = not inAcc and inAcc[1]
+
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
+
+// ---------------------------------------------------------------- accumulation data
+var array<float> aH = array.new<float>()
+var array<float> aL = array.new<float>()
+var array<float> aV = array.new<float>()
+var array<bool>  aUp = array.new<bool>()
+var int accBar0 = na
+if accStart
+    array.clear(aH)
+    array.clear(aL)
+    array.clear(aV)
+    array.clear(aUp)
+    accBar0 := bar_index
+if inAcc
+    array.push(aH, high)
+    array.push(aL, low)
+    array.push(aV, volume)
+    array.push(aUp, close >= open)
+
+// ---------------------------------------------------------------- profile + state
+var float rngH = na
+var float rngL = na
+var float poc  = na
+var float vah  = na
+var float val  = na
+var array<box> vpBoxes = array.new<box>()
+var line lPOC = na
+var line lVAH = na
+var line lVAL = na
+var box  accBox = na
+
+// AMD state: 0 idle, 1 watching for sweep, 2 swept (wait reclaim), 3 manipulation confirmed (wait POC),
+//            4 beyond POC (wait retest), 5 in trade / done, 6 failed, 7 invalid
+var int   st       = 0
+var int   dir      = 0          // +1 bullish AMD (swept the low), -1 bearish (swept the high)
+var float sweepExt = na
+var int   sweepBar = na
+var int   pocBar   = na
+var int   failCnt  = 0
+var string stTxt   = "waiting for accumulation"
+
+if accEnd and array.size(aH) > 2
+    rngH := array.max(aH)
+    rngL := array.min(aL)
+    float step = (rngH - rngL) / rows
+    if step > 0
+        up = array.new<float>(rows, 0.0)
+        dn = array.new<float>(rows, 0.0)
+        for i = 0 to array.size(aH) - 1
+            bh = array.get(aH, i)
+            bl = array.get(aL, i)
+            bv = array.get(aV, i)
+            r0 = math.max(0, math.min(rows - 1, int(math.floor((bl - rngL) / step))))
+            r1 = math.max(0, math.min(rows - 1, int(math.floor((bh - rngL) / step))))
+            share = bv / (r1 - r0 + 1)
+            for r = r0 to r1
+                if array.get(aUp, i)
+                    array.set(up, r, array.get(up, r) + share)
+                else
+                    array.set(dn, r, array.get(dn, r) + share)
+        tot = array.new<float>(rows, 0.0)
+        for r = 0 to rows - 1
+            array.set(tot, r, array.get(up, r) + array.get(dn, r))
+        pr = array.indexof(tot, array.max(tot))
+        poc := rngL + (pr + 0.5) * step
+        // value area: grow from the POC toward the heavier neighbour
+        target = array.sum(tot) * vaPct / 100
+        lo = pr
+        hi = pr
+        acc = array.get(tot, pr)
+        while acc < target and (lo > 0 or hi < rows - 1)
+            nxtUp = hi < rows - 1 ? array.get(tot, hi + 1) : -1.0
+            nxtDn = lo > 0 ? array.get(tot, lo - 1) : -1.0
+            if nxtUp >= nxtDn
+                hi += 1
+                acc += nxtUp
+            else
+                lo -= 1
+                acc += nxtDn
+        vah := rngL + (hi + 1) * step
+        val := rngL + lo * step
+        // draw
+        if showVP
+            while array.size(vpBoxes) > rows * 6
+                box.delete(array.shift(vpBoxes))
+            mx = array.max(tot)
+            for r = 0 to rows - 1
+                wTot = int(math.round(vpWidth * array.get(tot, r) / mx))
+                wUp = int(math.round(vpWidth * array.get(up, r) / mx))
+                y1 = rngL + r * step
+                y2 = y1 + step
+                if wUp > 0
+                    array.push(vpBoxes, box.new(accBar0, y2, accBar0 + wUp, y1, border_color = na, bgcolor = colUp))
+                if wTot - wUp > 0
+                    array.push(vpBoxes, box.new(accBar0 + wUp, y2, accBar0 + wTot, y1, border_color = na, bgcolor = colDn))
+        accBox := box.new(accBar0, rngH, bar_index - 1, rngL, border_color = color.new(color.gray, 40),
+             bgcolor = color.new(color.gray, 92), text = "A", text_color = color.gray, text_halign = text.align_right, text_valign = text.align_top)
+        if showLevels
+            lPOC := line.new(accBar0, poc, bar_index, poc, color = color.new(color.red, 0), width = 2, extend = extend.right)
+            lVAH := line.new(accBar0, vah, bar_index, vah, color = color.new(color.white, 20), extend = extend.right)
+            lVAL := line.new(accBar0, val, bar_index, val, color = color.new(color.white, 20), extend = extend.right)
+        st := 1
+        dir := 0
+        failCnt := 0
+        sweepExt := na
+        stTxt := "watching for a sweep"
+// stop extending yesterday's lines when a new accumulation starts
+if accStart
+    if not na(lPOC)
+        line.set_extend(lPOC, extend.none)
+        line.set_x2(lPOC, bar_index)
+        line.set_extend(lVAH, extend.none)
+        line.set_x2(lVAH, bar_index)
+        line.set_extend(lVAL, extend.none)
+        line.set_x2(lVAL, bar_index)
+    st := 0
+    stTxt := "accumulating"
+
+// ---------------------------------------------------------------- liquidity (untaken swings)
+var array<float> bslP = array.new<float>()
+var array<line>  bslL = array.new<line>()
+var array<float> sslP = array.new<float>()
+var array<line>  sslL = array.new<line>()
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+if not na(ph)
+    array.push(bslP, ph)
+    array.push(bslL, showLiq ? line.new(bar_index - pivLen, ph, bar_index, ph, color = colBSL, style = line.style_dashed, extend = extend.right) : na)
+    if array.size(bslP) > maxLiq
+        array.shift(bslP)
+        line.delete(array.shift(bslL))
+if not na(pl)
+    array.push(sslP, pl)
+    array.push(sslL, showLiq ? line.new(bar_index - pivLen, pl, bar_index, pl, color = colSSL, style = line.style_dashed, extend = extend.right) : na)
+    if array.size(sslP) > maxLiq
+        array.shift(sslP)
+        line.delete(array.shift(sslL))
+// taken liquidity: stop the line where it was swept
+if array.size(bslP) > 0
+    for i = array.size(bslP) - 1 to 0
+        if high > array.get(bslP, i) and bar_index > 0
+            ln = array.get(bslL, i)
+            if not na(ln)
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_dotted)
+            array.remove(bslP, i)
+            array.remove(bslL, i)
+if array.size(sslP) > 0
+    for i = array.size(sslP) - 1 to 0
+        if low < array.get(sslP, i) and bar_index > 0
+            ln = array.get(sslL, i)
+            if not na(ln)
+                line.set_extend(ln, extend.none)
+                line.set_x2(ln, bar_index)
+                line.set_style(ln, line.style_dotted)
+            array.remove(sslP, i)
+            array.remove(sslL, i)
+
+// next liquidity beyond a price in a direction (untaken swings + range edge + PDH/PDL)
+nextLiq(float from, int d, float minDist) =>
+    float best = na
+    cands = array.new<float>()
+    src = d == 1 ? bslP : sslP
+    if array.size(src) > 0
+        for i = 0 to array.size(src) - 1
+            array.push(cands, array.get(src, i))
+    array.push(cands, d == 1 ? rngH : rngL)
+    array.push(cands, d == 1 ? pdh : pdl)
+    for i = 0 to array.size(cands) - 1
+        p = array.get(cands, i)
+        if not na(p) and (p - from) * d >= minDist
+            if na(best) or (p - from) * d < (best - from) * d
+                best := p
+    best
+
+// ---------------------------------------------------------------- AMD state machine
+amdLbl(string txt, color col, bool atHigh) =>
+    label.new(bar_index, atHigh ? high : low, txt, style = atHigh ? label.style_label_down : label.style_label_up,
+         color = col, textcolor = color.white, size = size.small)
+
+sigEntry   = false
+sigFail    = false
+sigInvalid = false
+sigManip   = false
+sigPOC     = false
+float eStop = na
+float eT1   = na
+float eT2   = na
+
+if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
+    // 1 -> 2: sweep beyond the range
+    if st == 1
+        if low <= rngL - sweepTicks * tick and tradeLong
+            st := 2
+            dir := 1
+            sweepExt := low
+            sweepBar := bar_index
+        else if high >= rngH + sweepTicks * tick and tradeShort
+            st := 2
+            dir := -1
+            sweepExt := high
+            sweepBar := bar_index
+    // 2 -> 3: reclaim (close back inside the range)
+    if st == 2
+        sweepExt := dir == 1 ? math.min(sweepExt, low) : math.max(sweepExt, high)
+        depth = dir == 1 ? rngL - sweepExt : sweepExt - rngH
+        if depth > maxDepthATR * atr
+            st := 7
+            stTxt := "breakout, not a sweep"
+        else if (dir == 1 and close > rngL) or (dir == -1 and close < rngH)
+            st := 3
+            sigManip := true
+            stTxt := "manipulation: sweep reclaimed"
+            amdLbl("M", color.purple, dir == -1)
+        else if bar_index - sweepBar >= reclaimBars
+            st := 7
+            stTxt := "no reclaim: accepted beyond range"
+    // 3 -> 4: distribution = close beyond the POC
+    else if st == 3
+        if (dir == 1 and close > poc) or (dir == -1 and close < poc)
+            st := 4
+            pocBar := bar_index
+            failCnt := 0
+            sigPOC := true
+            stTxt := "beyond POC: wait for retest"
+            amdLbl("D", color.teal, dir == -1)
+        else if (dir == 1 and close < sweepExt) or (dir == -1 and close > sweepExt)
+            st := 7
+            sigInvalid := true
+            stTxt := "INVALID: sweep extreme broken"
+    // 4: POC retest
+    else if st == 4 and bar_index > pocBar
+        touched = dir == 1 ? low <= poc + retestTicks * tick : high >= poc - retestTicks * tick
+        rightSide = dir == 1 ? close > poc : close < poc
+        if not rightSide
+            failCnt += 1
+            if failCnt >= failCloses
+                st := 6
+                sigFail := true
+                stTxt := "POC retest FAILED"
+                amdLbl("✗ POC", color.red, dir == 1)
+        else
+            failCnt := 0
+            if touched
+                entry = close
+                stp = dir == 1 ? math.min(low, poc) - stopTicks * tick : math.max(high, poc) + stopTicks * tick
+                risk = math.abs(entry - stp)
+                t1 = nextLiq(entry, dir, minRR * risk)
+                t2 = na(t1) ? na : nextLiq(t1, dir, tick)
+                if na(t1)
+                    st := 5
+                    stTxt := "retest held, but no target >= " + str.tostring(minRR) + "R: skipped"
+                    amdLbl("✓ skip", color.gray, dir == -1)
+                else
+                    st := 5
+                    sigEntry := true
+                    eStop := stp
+                    eT1 := t1
+                    eT2 := na(t2) ? t1 + dir * risk : t2
+                    stTxt := "POC retest CONFIRMED: entry"
+                    amdLbl("✓ POC", color.green, dir == -1)
+            else if bar_index - pocBar > retestBars
+                st := 5
+                stTxt := "no retest in time"
+    // failed -> invalid if the sweep extreme breaks
+    if st == 6 and ((dir == 1 and close < sweepExt) or (dir == -1 and close > sweepExt))
+        st := 7
+        sigInvalid := true
+        stTxt := "INVALID: sweep extreme broken"
+
+// ---------------------------------------------------------------- orders
+var float tStop = na
+var float tT1   = na
+var float tT2   = na
+var float tEnt  = na
+var int   tQty  = 0
+var bool  t1Done = false
+pos = strategy.position_size
+if sigEntry and pos == 0
+    tEnt := close
+    tStop := eStop
+    tT1 := eT1
+    tT2 := eT2
+    t1Done := false
+    strategy.entry(dir == 1 ? "L" : "S", dir == 1 ? strategy.long : strategy.short, comment = dir == 1 ? "AMD long" : "AMD short")
+if pos != 0 and pos[1] == 0
+    tQty := int(math.abs(pos))
+if pos != 0
+    id = pos > 0 ? "L" : "S"
+    q1 = math.min(t1Qty, tQty)
+    qRest = tQty - q1
+    if not t1Done and q1 > 0 and math.abs(pos) < tQty
+        t1Done := true                          // T1 filled
+        if beAfterT1
+            tStop := tEnt
+    if not t1Done and q1 > 0
+        strategy.exit("T1", id, qty = q1, limit = tT1, stop = tStop, comment_profit = "T1", comment_loss = "Stop")
+    if qRest > 0
+        strategy.exit("T2", id, qty = qRest, limit = tT2, stop = tStop, comment_profit = "T2", comment_loss = tStop == tEnt ? "BE" : "Stop")
+if pos != 0 and hmNow >= flatHM and hmNow < 1800
+    strategy.close_all(comment = "Flat 4:55")
+
+// ---------------------------------------------------------------- plots
+inPos = pos != 0
+plot(inPos ? tStop : na, "Stop", color = color.red, style = plot.style_linebr)
+plot(inPos ? tT1 : na, "T1", color = color.lime, style = plot.style_linebr)
+plot(inPos ? tT2 : na, "T2", color = color.new(color.lime, 50), style = plot.style_linebr)
+plot(inPos ? tEnt : na, "Entry", color = color.gray, style = plot.style_linebr)
+plot(showPD ? pdh : na, "PDH", color = colBSL, style = plot.style_stepline)
+plot(showPD ? pdl : na, "PDL", color = colSSL, style = plot.style_stepline)
+
+// ---------------------------------------------------------------- dashboard
+var table dash = table.new(position.top_right, 2, 7, bgcolor = color.new(color.black, 20), border_width = 1)
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "AMD", text_color = color.white)
+    table.cell(dash, 1, 0, dir == 1 ? "Bullish" : dir == -1 ? "Bearish" : "—", text_color = dir == 1 ? color.lime : dir == -1 ? color.red : color.gray)
+    table.cell(dash, 0, 1, "State", text_color = color.white)
+    table.cell(dash, 1, 1, stTxt, text_color = color.yellow)
+    table.cell(dash, 0, 2, "POC", text_color = color.white)
+    table.cell(dash, 1, 2, str.tostring(poc, format.mintick), text_color = color.red)
+    table.cell(dash, 0, 3, "VAH / VAL", text_color = color.white)
+    table.cell(dash, 1, 3, str.tostring(vah, format.mintick) + " / " + str.tostring(val, format.mintick), text_color = color.white)
+    table.cell(dash, 0, 4, "Range H / L", text_color = color.white)
+    table.cell(dash, 1, 4, str.tostring(rngH, format.mintick) + " / " + str.tostring(rngL, format.mintick), text_color = color.gray)
+    table.cell(dash, 0, 5, "Sweep", text_color = color.white)
+    table.cell(dash, 1, 5, na(sweepExt) ? "—" : str.tostring(sweepExt, format.mintick), text_color = color.purple)
+    table.cell(dash, 0, 6, "Trade", text_color = color.white)
+    table.cell(dash, 1, 6, inPos ? ("entry " + str.tostring(tEnt, format.mintick) + " | stop " + str.tostring(tStop, format.mintick) + " | T1 " + str.tostring(tT1, format.mintick) + " | T2 " + str.tostring(tT2, format.mintick)) : "flat", text_color = color.white)
+
+// ---------------------------------------------------------------- alerts (Discord-ready JSON)
+j(string s) => '{"content": "AMD VP | ' + syminfo.ticker + ' | ' + s + '"}'
+if sigManip
+    alert(j((dir == 1 ? "Bullish" : "Bearish") + " manipulation: sweep to " + str.tostring(sweepExt, format.mintick) + " reclaimed"), alert.freq_once_per_bar_close)
+if sigPOC
+    alert(j("Closed beyond POC " + str.tostring(poc, format.mintick) + " - waiting for retest"), alert.freq_once_per_bar_close)
+if sigEntry
+    alert(j("POC retest CONFIRMED - " + (dir == 1 ? "LONG" : "SHORT") + " @ " + str.tostring(close, format.mintick) + " | stop " + str.tostring(eStop, format.mintick) + " | T1 " + str.tostring(eT1, format.mintick) + " | T2 " + str.tostring(eT2, format.mintick)), alert.freq_once_per_bar_close)
+if sigFail
+    alert(j("POC retest FAILED at " + str.tostring(poc, format.mintick)), alert.freq_once_per_bar_close)
+if sigInvalid
+    alert(j("INVALID - sweep extreme " + str.tostring(sweepExt, format.mintick) + " broken"), alert.freq_once_per_bar_close)

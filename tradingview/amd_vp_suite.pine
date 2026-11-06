@@ -4,10 +4,10 @@
 //
 // 1. ACCUMULATION  Inside a search window (default Asia, 6pm-2am ET) the script
 //                  finds the LATEST TIGHT RANGE before the window ends:
-//                    - walks back while the range stays under N x the
-//                      prior days' daily ATR (auto-fit)
+//                    - walks back while the candles stay SIDEWAYS: range height
+//                      <= K x the median candle, efficiency (net / path) <= max,
+//                      and no trend/arc shape (quadratic-fit R² <= max)
 //                    - at least M bars long
-//                    - small net move (open-to-close < X% of the range)
 //                    - both edges tested at least K times (that builds liquidity)
 //                  Fails any rule -> "no accumulation", no AMD that day.
 //                  Built-in volume profile of that range -> POC, VAH, VAL.
@@ -41,12 +41,13 @@ flatHM    = input.int(1655, "Flat all trades at (HHMM ET)", group = gS)
 
 gQ = "Accumulation detection"
 accMode    = input.string("Auto-fit (latest tight range)", "Mode", options = ["Auto-fit (latest tight range)", "Whole window"], group = gQ)
-fitMaxD    = input.float(0.4, "Max range height (x daily ATR)", minval = 0.1, step = 0.05, group = gQ, tooltip = "Daily ATR of the PRIOR days, so tonight's moves can't inflate it. 0.4 = ~160 pts on NQ when the daily ATR is ~400. Auto-fit grows the range backward while it stays under this height.")
+maxHgtK    = input.float(8.0, "Max range height (x median candle)", minval = 2, step = 0.5, group = gQ, tooltip = "Range height divided by the median candle (high-low) inside it. Sideways ranges are only a handful of candles tall; a trend leg is many.")
+maxER      = input.float(0.30, "Max efficiency (0 = chop, 1 = straight line)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Net close-to-close move divided by the total distance travelled. Sideways candles go back and forth, so this stays low.")
+maxShape   = input.float(0.40, "Max trend/arc shape (curve fit R²)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "How much of the movement a smooth curve explains. Grinds, V's and rounded arcs fit a curve (high); real ranges are noise around a flat middle (low).")
 minAccBars = input.int(12, "Min length (bars)", minval = 3, group = gQ, tooltip = "12 bars = 1 hour on 5m.")
-maxNetPct  = input.float(50, "Max net move (% of range)", minval = 10, maxval = 100, group = gQ, tooltip = "Open-to-close of the range. Big net move = trend, not balance.")
 endSlack   = input.int(24, "Range may end up to N bars before the window ends", minval = 0, maxval = 200, group = gQ, tooltip = "Auto-fit tries every end point in the last N bars of the window and keeps the LONGEST tight range. 24 bars = 2 hours on 5m. Stops a late pre-London move from hiding the range.")
 minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ, tooltip = "Separate visits to the top and bottom of the range. This is what builds the liquidity a sweep goes after.")
-touchPct   = input.float(15, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ, tooltip = "A bar 'tests' an edge if it trades within this % of the range from the high or low.")
+touchPct   = input.float(20, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ, tooltip = "A bar 'tests' an edge if it trades within this % of the range from the high or low.")
 
 gV = "Volume profile"
 rows     = input.int(40, "Rows", minval = 10, maxval = 100, group = gV)
@@ -97,7 +98,6 @@ hmNow   = hour(time, TZ) * 100 + minute(time, TZ)
 accStart = inAcc and not inAcc[1]
 accEnd   = not inAcc and inAcc[1]
 
-atrD  = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
 pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
 pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
 
@@ -162,44 +162,103 @@ if accStart
     poc := na
     stTxt := "searching for accumulation"
 
+effic(array<float> cs, int a, int b) =>
+    float pth = 0.0
+    for i = a + 1 to b
+        pth += math.abs(array.get(cs, i) - array.get(cs, i - 1))
+    pth > 0 ? math.abs(array.get(cs, b) - array.get(cs, a)) / pth : 1.0
+
 if accEnd and array.size(aH) > minAccBars
     n = array.size(aH)
-    // ---- 1. fit the range: try each end point in the last `endSlack` bars, keep the longest tight range
+    // ---- 1. find the sideways candles: from each end point in the last `endSlack` bars, walk back
+    //         while the span stays narrow (height <= K x median candle). A span qualifies when it is
+    //         choppy (efficiency <= max) and has no trend/arc shape (quadratic-fit R² <= max).
+    //         Keep the longest qualifying span.
     int s0 = 0
     int e0 = n - 1
     float hi = array.max(aH)
     float lo = array.min(aL)
     if accMode == "Auto-fit (latest tight range)"
-        maxH = na(atrD) ? 1e10 : fitMaxD * atrD
         int bestLen = 0
         for e = n - 1 to math.max(1, n - 1 - endSlack)
             float h_ = array.get(aH, e)
             float l_ = array.get(aL, e)
-            int s_ = e
+            float path = 0.0
+            float ce = array.get(aC, e)
+            // running sums for a quadratic fit of close vs. x (x = bars back from e), y centred on ce
+            float S0 = 1.0
+            float S1 = 0.0
+            float S2 = 0.0
+            float S3 = 0.0
+            float S4 = 0.0
+            float Sy = 0.0
+            float Sxy = 0.0
+            float Sx2y = 0.0
+            float Syy = 0.0
+            rngs = array.new<float>()
+            array.push(rngs, array.get(aH, e) - array.get(aL, e))
             for i = e - 1 to 0
                 nh = math.max(h_, array.get(aH, i))
                 nl = math.min(l_, array.get(aL, i))
-                if nh - nl > maxH
+                array.push(rngs, array.get(aH, i) - array.get(aL, i))
+                med = array.median(rngs)
+                if array.size(rngs) >= 6 and med > 0 and (nh - nl) / med > maxHgtK
                     break
                 h_ := nh
                 l_ := nl
-                s_ := i
-            if e - s_ + 1 > bestLen
-                bestLen := e - s_ + 1
-                s0 := s_
-                e0 := e
-                hi := h_
-                lo := l_
+                path += math.abs(array.get(aC, i + 1) - array.get(aC, i))
+                x = float(e - i)
+                y = array.get(aC, i) - ce
+                S0 += 1
+                S1 += x
+                S2 += x * x
+                S3 += x * x * x
+                S4 += x * x * x * x
+                Sy += y
+                Sxy += x * y
+                Sx2y += x * x * y
+                Syy += y * y
+                spanLen = e - i + 1
+                if spanLen > bestLen and spanLen >= minAccBars
+                    er = path > 0 ? math.abs(ce - array.get(aC, i)) / path : 1.0
+                    if er <= maxER
+                        // solve [S4 S3 S2; S3 S2 S1; S2 S1 S0] [a b c] = [Sx2y Sxy Sy] (Cramer)
+                        det = S4 * (S2 * S0 - S1 * S1) - S3 * (S3 * S0 - S1 * S2) + S2 * (S3 * S1 - S2 * S2)
+                        if math.abs(det) > 1e-9
+                            qa = (Sx2y * (S2 * S0 - S1 * S1) - S3 * (Sxy * S0 - S1 * Sy) + S2 * (Sxy * S1 - S2 * Sy)) / det
+                            qb = (S4 * (Sxy * S0 - S1 * Sy) - Sx2y * (S3 * S0 - S1 * S2) + S2 * (S3 * Sy - Sxy * S2)) / det
+                            qc = (S4 * (S2 * Sy - Sxy * S1) - S3 * (S3 * Sy - Sxy * S2) + Sx2y * (S3 * S1 - S2 * S2)) / det
+                            ssTot = Syy - Sy * Sy / S0
+                            ssRes = Syy - (qa * Sx2y + qb * Sxy + qc * Sy)
+                            r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0.0
+                            if r2 <= maxShape
+                                bestLen := spanLen
+                                s0 := i
+                                e0 := e
+                                hi := h_
+                                lo := l_
+        // trim the lead-in: start where closes first sit inside the span's core (15th-85th percentile)
+        if bestLen > 0
+            core = array.new<float>()
+            for i = s0 to e0
+                array.push(core, array.get(aC, i))
+            q1 = array.percentile_nearest_rank(core, 15)
+            q2 = array.percentile_nearest_rank(core, 85)
+            while s0 < e0 - minAccBars and (array.get(aC, s0) < q1 or array.get(aC, s0) > q2)
+                s0 += 1
+            hi := array.get(aH, s0)
+            lo := array.get(aL, s0)
+            for i = s0 to e0
+                hi := math.max(hi, array.get(aH, i))
+                lo := math.min(lo, array.get(aL, i))
     len = e0 - s0 + 1
     hgt = hi - lo
     // ---- 2. checks
     string why = ""
     if len < minAccBars
-        why := "tight range only " + str.tostring(len) + " bars"
-    else if accMode == "Whole window" and not na(atrD) and hgt > fitMaxD * atrD
-        why := "range " + str.tostring(hgt / atrD, "#.##") + "x daily ATR"
-    else if hgt > 0 and math.abs(array.get(aC, e0) - array.get(aO, s0)) / hgt * 100 > maxNetPct
-        why := "trended " + str.tostring(math.abs(array.get(aC, e0) - array.get(aO, s0)) / hgt * 100, "#") + "% of range"
+        why := "no sideways stretch of " + str.tostring(minAccBars) + "+ bars (longest " + str.tostring(len) + ")"
+    else if accMode == "Whole window" and effic(aC, s0, e0) > maxER
+        why := "not sideways (efficiency " + str.tostring(effic(aC, s0, e0), "#.##") + ")"
     else
         zone = hgt * touchPct / 100
         int tH = 0

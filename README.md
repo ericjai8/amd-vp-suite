@@ -41,6 +41,10 @@ It sends an alert for each of these events:
 - Failed retest
 - Invalid setup
 
+## Displacement Candles (separate indicator)
+
+**File:** `tradingview/displacement.pine`. Marks candles with a body at least 2× the median body of the last 20 candles, a body that's at least 70% of the candle's range, a close in the outer 25% of the candle, and a Fair Value Gap left behind. The mark appears when the next candle closes, since that candle completes the FVG. Bright marks also broke structure (closed beyond the 10-bar swing); faded marks didn't. On 5m MNQ (Sep–Oct 2026, all sessions) that's about 19 marks a day, about 10 of them with a structure break.
+
 ## Checking the boxes
 
 `research/continuous_sim.py` runs the same detection logic in Python on 5m MNQ data and saves `research/continuous_samples.png` (16 sample A boxes). On Sep–Oct 2026, about 12 of 16 samples were clean sideways chop with the lead-in move excluded; the misses were wide U shapes or ranges that drifted at one end.

@@ -1,0 +1,68 @@
+//@version=6
+// =====================================================================
+// Displacement Candles  [MNQ]
+// Marks candles that show real one-way order flow:
+//   1. big body:      body >= K x median body of the last N candles
+//   2. small wicks:   body >= X% of the candle's high-low range
+//   3. strong close:  closes in the outer Y% of the candle (near the high for up)
+//   4. leaves an FVG: the candles either side of it don't overlap   (on by default)
+//   5. breaks structure: closes beyond the recent swing high/low     (optional)
+// Because the FVG needs the NEXT candle, a mark appears one bar late (on close
+// of the following candle) and is drawn on the displacement candle itself.
+// Bright = also broke structure. Faded = displacement without a break.
+// =====================================================================
+indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300)
+
+len      = input.int(20, "Compare with last N candles", minval = 5)
+bodyK    = input.float(2.0, "Body size (x median body)", minval = 1.0, step = 0.25)
+bodyPct  = input.float(70, "Body % of candle range (min)", minval = 30, maxval = 100)
+closePct = input.float(25, "Close within outer % of candle", minval = 5, maxval = 50)
+needFVG  = input.bool(true, "Must leave a Fair Value Gap")
+needBOS  = input.bool(false, "Must break structure (close beyond swing)")
+swingLen = input.int(10, "Structure: swing lookback (bars)", minval = 3)
+showFVG  = input.bool(true, "Draw the FVG")
+fvgBars  = input.int(15, "FVG box length (bars)", minval = 3)
+paintBar = input.bool(true, "Color the displacement candle")
+colUp    = input.color(color.new(#00e5ff, 0), "Up displacement")
+colDn    = input.color(color.new(#ff4081, 0), "Down displacement")
+
+body   = math.abs(close - open)
+rng    = high - low
+medB   = ta.percentile_nearest_rank(body, len, 50)
+
+// candidate = previous bar [1]; its median is from the bars before it [2]
+c_body  = body[1]
+c_rng   = rng[1]
+bigBody = medB[2] > 0 and c_body >= bodyK * medB[2]
+solid   = c_rng > 0 and c_body / c_rng * 100 >= bodyPct
+upC     = close[1] > open[1]
+dnC     = close[1] < open[1]
+upClose = c_rng > 0 and (high[1] - close[1]) / c_rng * 100 <= closePct
+dnClose = c_rng > 0 and (close[1] - low[1]) / c_rng * 100 <= closePct
+fvgUp   = low > high[2]
+fvgDn   = high < low[2]
+swingH  = ta.highest(high, swingLen)[2]
+swingL  = ta.lowest(low, swingLen)[2]
+bosUp   = close[1] > swingH
+bosDn   = close[1] < swingL
+
+dispUp = upC and bigBody and solid and upClose and (not needFVG or fvgUp) and (not needBOS or bosUp)
+dispDn = dnC and bigBody and solid and dnClose and (not needFVG or fvgDn) and (not needBOS or bosDn)
+
+// bright if it also broke structure, faded if not
+cUp = bosUp ? colUp : color.new(colUp, 55)
+cDn = bosDn ? colDn : color.new(colDn, 55)
+
+plotshape(dispUp, "Up displacement", shape.triangleup, location.belowbar, cUp, offset = -1, size = size.tiny)
+plotshape(dispDn, "Down displacement", shape.triangledown, location.abovebar, cDn, offset = -1, size = size.tiny)
+barcolor(paintBar and dispUp ? cUp : paintBar and dispDn ? cDn : na, offset = -1)
+
+if showFVG and dispUp and fvgUp
+    box.new(bar_index - 1, low, bar_index - 1 + fvgBars, high[2], border_color = na, bgcolor = color.new(colUp, 85))
+if showFVG and dispDn and fvgDn
+    box.new(bar_index - 1, low[2], bar_index - 1 + fvgBars, high, border_color = na, bgcolor = color.new(colDn, 85))
+
+alertcondition(dispUp, "Up displacement", "Up displacement candle on {{ticker}} ({{interval}})")
+alertcondition(dispDn, "Down displacement", "Down displacement candle on {{ticker}} ({{interval}})")
+alertcondition(dispUp and bosUp, "Up displacement + BOS", "Up displacement + structure break on {{ticker}} ({{interval}})")
+alertcondition(dispDn and bosDn, "Down displacement + BOS", "Down displacement + structure break on {{ticker}} ({{interval}})")

@@ -5,6 +5,7 @@ matplotlib.use('Agg'); import matplotlib.pyplot as plt
 df=D.load('5m'); S=D.enrich(df)
 o,h,l,c,hm,tday=S['o'],S['h'],S['l'],S['c'],S['hm'],S['tday']
 K,ERMAX,MINB,SLACK,ZONE,TOUCH,XPH,R2MAX=8.0,0.30,12,24,0.20,2,1.0,float(sys.argv[1])
+W,IMPK,IMPER=6,4.0,0.5
 def r2q(y):
     x=np.arange(len(y)); p=np.polyfit(x,y,2); res=y-np.polyval(p,x); tot=((y-y.mean())**2).sum()
     return 1-(res**2).sum()/tot if tot>0 else 0
@@ -20,6 +21,10 @@ def detect(ix):
     for e in range(n-1, max(1,n-1-SLACK)-1, -1):
         hh,ll=H[e],L[e]; rngs=[H[e]-L[e]]
         for i in range(e-1,-1,-1):
+            # stop at the end of the last impulse leg: the W bars ending at i moved hard in one direction
+            if len(rngs)>=6 and i-W>=0:
+                med0=np.median(rngs); seg=C[i-W:i+1]; pth=np.abs(np.diff(seg)).sum()
+                if med0>0 and abs(seg[-1]-seg[0])>=IMPK*med0 and pth>0 and abs(seg[-1]-seg[0])/pth>=IMPER: break
             nh,nl=max(hh,H[i]),min(ll,L[i]); rngs.append(H[i]-L[i]); med=np.median(rngs)
             if len(rngs)>=6 and med>0 and (nh-nl)/med>K: break
             hh,ll=nh,nl
@@ -45,7 +50,7 @@ for d,g in days:
     if status=='ok': samples[str(d)]=(d,w,fit,ix)
 s=pd.Series(res); print("R2MAX",R2MAX,"nights:",len(s), s.value_counts().to_dict())
 print("ok: median length",np.median([f[1]-f[0]+1 for _,_,f,_ in samples.values()]),"bars; median height",np.median([f[2]-f[3] for _,_,f,_ in samples.values()]),"pts")
-keys=['2024-05-27','2024-02-26','2026-02-13','2024-05-14','2024-07-16','2026-04-14','2025-09-22','2025-08-28']
+keys=['2024-05-27','2024-02-26','2026-02-13','2026-01-09','2024-07-16','2026-04-14','2025-09-22','2025-08-27']
 rng=np.random.default_rng(int(R2MAX*100)); keys += list(rng.choice([k for k in samples if k not in keys],4,replace=False))
 fig,axs=plt.subplots(3,4,figsize=(22,13))
 for ax,k in zip(axs.flat,keys):
@@ -62,5 +67,5 @@ for ax,k in zip(axs.flat,keys):
     else:
         ax.set_title(f"{k}  no accumulation",color='orange')
 fig.patch.set_facecolor('#111')
-fig.suptitle(f"Accumulation v7 (no midline-cross rule) (gold): sideways candles, rotates through middle, no curve/trend shape (R2<= {R2MAX}). Top row = the 4 arcs from before.", color='w')
-plt.tight_layout(); plt.savefig(f'accumulation_v7_{R2MAX}.png',dpi=80)
+fig.suptitle(f"Accumulation v8: starts after the last impulse leg (gold): sideways candles, rotates through middle, no curve/trend shape (R2<= {R2MAX}). Top row = the 4 arcs from before.", color='w')
+plt.tight_layout(); plt.savefig(f'accumulation_v8_{R2MAX}.png',dpi=80)

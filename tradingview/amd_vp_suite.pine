@@ -4,6 +4,7 @@
 //
 // 1. ACCUMULATION  Inside a search window (default Asia, 6pm-2am ET) the script
 //                  finds the LATEST TIGHT RANGE before the window ends:
+//                    - starts where the last impulse leg ended
 //                    - walks back while the candles stay SIDEWAYS: range height
 //                      <= K x the median candle, efficiency (net / path) <= max,
 //                      and no trend/arc shape (quadratic-fit R² <= max)
@@ -43,6 +44,9 @@ gQ = "Accumulation detection"
 accMode    = input.string("Auto-fit (latest tight range)", "Mode", options = ["Auto-fit (latest tight range)", "Whole window"], group = gQ)
 maxHgtK    = input.float(8.0, "Max range height (x median candle)", minval = 2, step = 0.5, group = gQ, tooltip = "Range height divided by the median candle (high-low) inside it. Sideways ranges are only a handful of candles tall; a trend leg is many.")
 maxER      = input.float(0.30, "Max efficiency (0 = chop, 1 = straight line)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Net close-to-close move divided by the total distance travelled. Sideways candles go back and forth, so this stays low.")
+impBars    = input.int(6, "Stop at an impulse leg: bars", minval = 2, maxval = 30, group = gQ, tooltip = "Accumulation starts where the last strong move ends. Walking back, the box stops if the N bars before a point moved hard in one direction.")
+impK       = input.float(4.0, "Impulse size (x median candle)", minval = 1.0, step = 0.5, group = gQ)
+impER      = input.float(0.5, "Impulse straightness (efficiency)", minval = 0.1, maxval = 1.0, step = 0.05, group = gQ)
 maxShape   = input.float(0.40, "Max trend/arc shape (curve fit R²)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "How much of the movement a smooth curve explains. Grinds, V's and rounded arcs fit a curve (high); real ranges are noise around a flat middle (low).")
 minAccBars = input.int(12, "Min length (bars)", minval = 3, group = gQ, tooltip = "12 bars = 1 hour on 5m.")
 endSlack   = input.int(24, "Range may end up to N bars before the window ends", minval = 0, maxval = 200, group = gQ, tooltip = "Auto-fit tries every end point in the last N bars of the window and keeps the LONGEST tight range. 24 bars = 2 hours on 5m. Stops a late pre-London move from hiding the range.")
@@ -198,6 +202,15 @@ if accEnd and array.size(aH) > minAccBars
             rngs = array.new<float>()
             array.push(rngs, array.get(aH, e) - array.get(aL, e))
             for i = e - 1 to 0
+                // stop at the end of the last impulse leg (the impBars bars ending at i moved hard one way)
+                if array.size(rngs) >= 6 and i - impBars >= 0
+                    med0 = array.median(rngs)
+                    float pth = 0.0
+                    for k = i - impBars + 1 to i
+                        pth += math.abs(array.get(aC, k) - array.get(aC, k - 1))
+                    net = math.abs(array.get(aC, i) - array.get(aC, i - impBars))
+                    if med0 > 0 and pth > 0 and net >= impK * med0 and net / pth >= impER
+                        break
                 nh = math.max(h_, array.get(aH, i))
                 nl = math.min(l_, array.get(aL, i))
                 array.push(rngs, array.get(aH, i) - array.get(aL, i))

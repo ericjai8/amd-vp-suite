@@ -15,6 +15,9 @@
 // of the following candle) and is drawn on the displacement candle itself.
 // Bright = also broke structure. Faded = displacement without a break.
 // Opening price lines (ET): futures daily open 6pm, midnight open, 9:30 NY open.
+// Reading aids: trend background (chart or higher TF), C / R tags on bright
+// displacement (C = with the trend, R = against it), dashboard with the levels
+// that make the next BOS / CHoCH, and a gray "range" tint when breaks keep flipping.
 // =====================================================================
 indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300, max_lines_count = 300, max_labels_count = 400)
 
@@ -39,6 +42,16 @@ colBosD  = input.color(color.new(color.red, 10), "BOS down", group = gS, inline 
 colChU   = input.color(color.new(#b388ff, 0), "CHoCH up", group = gS, inline = "c")
 colChD   = input.color(color.new(#ff9800, 0), "CHoCH down", group = gS, inline = "c")
 keepStr  = input.int(40, "Keep last N breaks", minval = 5, maxval = 200, group = gS)
+
+gT = "Trend & reading aids"
+htf      = input.timeframe("", "Trend timeframe (blank = chart)", group = gT, tooltip = "Background, C/R tags and dashboard bias use structure from this timeframe. On a 5m chart try 15. Must be the chart timeframe or higher.")
+htfPiv   = input.int(5, "Trend TF swing strength", minval = 2, maxval = 20, group = gT)
+showBG   = input.bool(true, "Trend background", group = gT)
+showCR   = input.bool(true, "C / R tags on bright displacement", group = gT)
+showDash = input.bool(true, "Dashboard", group = gT)
+useChop  = input.bool(true, "Range warning (breaks flipping)", group = gT)
+chopMin  = input.int(60, "Range warning: window (minutes)", minval = 10, group = gT)
+chopN    = input.int(3, "Range warning: flips in window", minval = 2, maxval = 10, group = gT, tooltip = "This many breaks in alternating directions inside the window = range / chop.")
 
 gO = "Opening prices (ET)"
 showDO   = input.bool(true, "Daily open (6:00pm, futures day)", group = gO, inline = "do")
@@ -101,6 +114,59 @@ if barstate.isconfirmed
             markBreak(lastSLb, lastSL, chDn ? "CHoCH" : "BOS", chDn ? colChD : colBosD, false)
         trend := -1
 
+// ---------------------------------------------------------------- trend timeframe
+// same swing logic as above, self-contained so it can run on a higher timeframe
+f_trend(int p) =>
+    var float sh = na
+    var float sl = na
+    var bool shD = true
+    var bool slD = true
+    var int tr = 0
+    h_ = ta.pivothigh(high, p, p)
+    l_ = ta.pivotlow(low, p, p)
+    if not na(h_)
+        sh := h_
+        shD := false
+    if not na(l_)
+        sl := l_
+        slD := false
+    if not shD and close > sh
+        shD := true
+        tr := 1
+    if not slD and close < sl
+        slD := true
+        tr := -1
+    tr
+tfT   = htf == "" ? timeframe.period : htf
+htfTr = request.security(syminfo.tickerid, tfT, f_trend(htfPiv)[1], lookahead = barmerge.lookahead_on)
+bias  = htf == "" ? trend : htfTr
+
+// range warning: breaks flipping direction inside the window
+var array<int> bBars = array.new<int>()
+var array<int> bDirs = array.new<int>()
+if brkUp
+    array.push(bBars, bar_index)
+    array.push(bDirs, 1)
+if brkDn
+    array.push(bBars, bar_index)
+    array.push(bDirs, -1)
+while array.size(bBars) > 30
+    array.shift(bBars)
+    array.shift(bDirs)
+chopBars = math.max(2, int(math.ceil(chopMin * 60.0 / timeframe.in_seconds())))
+int flips = 0
+if array.size(bBars) > 1
+    for i = array.size(bBars) - 1 to 1
+        if bar_index - array.get(bBars, i - 1) > chopBars
+            break
+        if array.get(bDirs, i) != array.get(bDirs, i - 1)
+            flips += 1
+chop = useChop and flips + 1 >= chopN
+
+bgcolor(not showBG ? na : chop ? color.new(color.gray, 85) : bias == 1 ? color.new(color.lime, 93) : bias == -1 ? color.new(color.red, 93) : na, title = "Trend background")
+if chop and not chop[1]
+    label.new(bar_index, high, "range", style = label.style_label_down, color = color.new(color.gray, 30), textcolor = color.white, size = size.small)
+
 // ---------------------------------------------------------------- displacement
 body   = math.abs(close - open)
 rng    = high - low
@@ -131,6 +197,42 @@ plotshape(dispUp, "Up displacement", shape.triangleup, location.belowbar, cUp, o
 plotshape(dispDn, "Down displacement", shape.triangledown, location.abovebar, cDn, offset = -1, size = size.tiny)
 barcolor(paintBar and dispUp ? cUp : paintBar and dispDn ? cDn : na, offset = -1)
 
+// C / R: bright displacement with (C) or against (R) the trend that was in place before it
+biasPrev = bias[2]
+contUp = showCR and dispUp and bosUp and biasPrev == 1
+revUp  = showCR and dispUp and bosUp and biasPrev != 1
+contDn = showCR and dispDn and bosDn and biasPrev == -1
+revDn  = showCR and dispDn and bosDn and biasPrev != -1
+plotshape(contUp, "C up", shape.labelup, location.belowbar, color.new(color.lime, 20), offset = -1, text = "C", textcolor = color.black, size = size.tiny)
+plotshape(revUp, "R up", shape.labelup, location.belowbar, color.new(#b388ff, 0), offset = -1, text = "R", textcolor = color.black, size = size.tiny)
+plotshape(contDn, "C down", shape.labeldown, location.abovebar, color.new(color.red, 20), offset = -1, text = "C", textcolor = color.white, size = size.tiny)
+plotshape(revDn, "R down", shape.labeldown, location.abovebar, color.new(#ff9800, 0), offset = -1, text = "R", textcolor = color.black, size = size.tiny)
+
+// ---------------------------------------------------------------- dashboard
+var string lastBrk = "—"
+if brkUp
+    lastBrk := (chUp ? "CHoCH up @ " : "BOS up @ ") + str.tostring(close, format.mintick)
+if brkDn
+    lastBrk := (chDn ? "CHoCH down @ " : "BOS down @ ") + str.tostring(close, format.mintick)
+trTxt(int t) => t == 1 ? "UP" : t == -1 ? "DOWN" : "—"
+trCol(int t) => t == 1 ? color.lime : t == -1 ? color.red : color.gray
+var table dash = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 25), border_width = 1)
+if showDash and barstate.islast
+    upLvl = shDone ? "wait for new swing high" : str.tostring(lastSH, format.mintick)
+    dnLvl = slDone ? "wait for new swing low" : str.tostring(lastSL, format.mintick)
+    table.cell(dash, 0, 0, "Trend (chart)", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, trTxt(trend), text_color = trCol(trend), text_size = size.small)
+    table.cell(dash, 0, 1, "Bias (" + (htf == "" ? "chart" : htf) + ")", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 1, trTxt(bias), text_color = trCol(bias), text_size = size.small)
+    table.cell(dash, 0, 2, "State", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 2, chop ? "RANGE: breaks flipping" : "trending", text_color = chop ? color.gray : color.yellow, text_size = size.small)
+    table.cell(dash, 0, 3, "Last break", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 3, lastBrk, text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 4, trend == -1 ? "CHoCH up above" : "BOS up above", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 4, upLvl, text_color = trend == -1 ? colChU : colBosU, text_size = size.small)
+    table.cell(dash, 0, 5, trend == 1 ? "CHoCH down below" : "BOS down below", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 5, dnLvl, text_color = trend == 1 ? colChD : colBosD, text_size = size.small)
+
 if showFVG and dispUp and fvgUp
     box.new(bar_index - 1, low, bar_index - 1 + fvgBars, high[2], border_color = na, bgcolor = color.new(colUp, 85))
 if showFVG and dispDn and fvgDn
@@ -144,6 +246,9 @@ alertcondition(brkUp and not chUp, "BOS up", "BOS up on {{ticker}} ({{interval}}
 alertcondition(brkDn and not chDn, "BOS down", "BOS down on {{ticker}} ({{interval}})")
 alertcondition(chUp, "CHoCH up", "CHoCH up (bullish) on {{ticker}} ({{interval}})")
 alertcondition(chDn, "CHoCH down", "CHoCH down (bearish) on {{ticker}} ({{interval}})")
+alertcondition(revUp or revDn, "R: reversal displacement", "Reversal displacement (R) on {{ticker}} ({{interval}})")
+alertcondition(contUp or contDn, "C: continuation displacement", "Continuation displacement (C) on {{ticker}} ({{interval}})")
+alertcondition(chop and not chop[1], "Range warning", "Range / chop: breaks flipping on {{ticker}} ({{interval}})")
 
 // ---------------------------------------------------------------- opening price lines
 TZ = "America/New_York"

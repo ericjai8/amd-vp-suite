@@ -50,6 +50,13 @@ It also marks **every** structure break from confirmed swing pivots (5 bars each
 
 Opening price lines (ET): daily open at 6pm, midnight open, and NY open at 9:30.
 
+Reading aids (all can be switched off):
+
+- **Trend background:** a faint green tint after an up break and a faint red tint after a down break. It can use a higher timeframe (on a 5m chart, try 15).
+- **C / R tags** on bright displacement: **C** means it goes with the trend that was in place before the candle (continuation). **R** means it goes against it (reversal).
+- **Dashboard:** chart trend, higher-timeframe bias, last break, and the swing levels that would make the next BOS or CHoCH.
+- **Range warning:** when 3 breaks flip back and forth within 60 minutes, the background turns gray and gets a "range" tag.
+
 ## Checking the boxes
 
 `research/continuous_sim.py` runs the same detection logic in Python on 5m MNQ data and saves `research/continuous_samples.png` (16 sample A boxes). On Sep–Oct 2026, about 12 of 16 samples were clean sideways chop with the lead-in move excluded; the misses were wide U shapes or ranges that drifted at one end.

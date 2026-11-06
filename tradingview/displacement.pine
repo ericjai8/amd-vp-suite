@@ -102,9 +102,12 @@ newOpen(array<line> ls, array<label> ts, string name, color col) =>
         line.delete(array.shift(ls))
         label.delete(array.shift(ts))
 
-if showDO and startsAt(1800)
+isDO = startsAt(1800)
+isMO = startsAt(0)
+isNY = startsAt(930)
+if showDO and isDO
     newOpen(doL, doT, "Daily open", colDO)
-if showMO and startsAt(0)
+if showMO and isMO
     newOpen(moL, moT, "Midnight open", colMO)
-if showNY and startsAt(930)
+if showNY and isNY
     newOpen(nyL, nyT, "NY open", colNY)

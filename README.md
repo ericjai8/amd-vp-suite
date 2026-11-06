@@ -16,6 +16,7 @@ Rules are set in minutes, not bars, so they behave the same on 1m, 5m, or 30m. T
 | **✓ POC: retest confirmed** | Price pulls back to within 8 ticks of the POC and closes back on the right side. The script enters on that close. |
 | **✗ POC: retest failed** | Two closes land on the wrong side of the POC. |
 | **Invalid** | Price closes beyond the sweep's extreme, so the move wasn't a sweep after all. |
+| **FVG option** (off by default) | Turn on **Also enter on FVG retest** under AMD rules. The first Fair Value Gap after the sweep is drawn as an aqua box. Losing the POC no longer fails the setup while price holds that FVG. Entry is on a retest of the POC or the FVG, whichever holds first (for the FVG, a candle that touches it and closes back out in your direction). The setup fails only on closes through the deeper of the two. Labels and alerts say ✓ FVG or ✗ FVG. |
 
 ### Stops, targets, and exits
 

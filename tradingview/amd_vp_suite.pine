@@ -1,6 +1,6 @@
 //@version=6
 // =====================================================================
-// AMD + Volume Profile Suite  [MNQ]   v5: tighter A box (chop only), any session
+// AMD + Volume Profile Suite  [MNQ]   v5.1: optional FVG retest entry
 //
 // 1. ACCUMULATION  Checked on EVERY bar: do the most recent bars form a sideways
 //                  range? Walking back from the current bar, the range
@@ -24,6 +24,9 @@
 // 4. POC RETEST    Pullback to the POC: close back on the right side = CONFIRMED
 //                  (entry); closes on the wrong side = FAILED; sweep extreme
 //                  broken = INVALID.
+//                  Optional (off by default): the first FVG after the sweep also
+//                  counts. Losing the POC is fine while price holds the FVG; entry
+//                  on POC OR FVG retest, failed only on closes through the deeper one.
 // Stop   retest candle | higher low / range edge | sweep extreme, min distance.
 // Size   contracts = $ risk / (stop points x point value), capped.
 // Targets next untaken liquidity; T1 must be >= min R:R. Part at T1, rest at T2,
@@ -72,6 +75,8 @@ reclaimMin  = input.int(30, "Reclaim within (minutes)", minval = 1, group = gA)
 retestTicks = input.int(8, "POC retest tolerance (ticks)", minval = 0, group = gA)
 retestMin   = input.int(180, "Retest must come within (minutes)", minval = 5, group = gA)
 failCloses  = input.int(2, "Failed retest = closes beyond POC", minval = 1, maxval = 5, group = gA)
+useFVG      = input.bool(false, "Also enter on FVG retest", group = gA, tooltip = "Uses the first Fair Value Gap that forms after the sweep. Price losing the POC doesn't fail the setup while it holds that FVG. Entry on a POC or FVG retest, whichever holds first. Failed = closes through the deeper of the two.")
+colFVG      = input.color(color.new(color.aqua, 85), "FVG color", group = gA)
 
 gR = "Stop, size & targets"
 stopMode   = input.string("Higher low / range edge", "Stop placement", options = ["Retest candle", "Higher low / range edge", "Sweep extreme (LL / HH)"], group = gR)
@@ -253,6 +258,10 @@ var int   sweepBar = na
 var int   pocBar   = na
 var int   failCnt  = 0
 var int   doneBar  = 0
+var float fvgNear  = na    // FVG edge price reaches first on the pullback
+var float fvgFar   = na    // FVG edge that must hold
+var box   fvgBox   = na
+var string eZone   = "POC"
 var string stTxt   = "scanning for accumulation"
 
 amdLbl(string txt, color col, bool atHigh) =>
@@ -384,6 +393,10 @@ pos = strategy.position_size
 if barstate.isconfirmed
     // finished setups: back to scanning once flat
     if (st == 5 or st == 6 or st == 7) and pos == 0 and bar_index > doneBar
+        if not na(fvgBox)
+            box.set_extend(fvgBox, extend.none)
+            box.set_right(fvgBox, bar_index)
+            fvgBox := na
         st := 0
         stTxt := "scanning for accumulation"
     // remember the most recent valid range
@@ -424,7 +437,19 @@ if barstate.isconfirmed
                 sweepExt := breakDn ? low : high
                 sweepBar := bar_index
                 failCnt := 0
+                fvgNear := na
+                fvgFar := na
                 stTxt := "accumulation broken: sweep or breakout?"
+    // first FVG after the sweep, in the reclaim direction
+    if useFVG and (st == 3 or st == 4) and na(fvgFar) and bar_index - 1 > sweepBar
+        gapUp = dir == 1 and low > high[2] and high[2] > sweepExt
+        gapDn = dir == -1 and high < low[2] and low[2] < sweepExt
+        if gapUp or gapDn
+            fvgNear := gapUp ? low : high
+            fvgFar := gapUp ? high[2] : low[2]
+            fvgBox := box.new(bar_index - 1, math.max(fvgNear, fvgFar), bar_index, math.min(fvgNear, fvgFar),
+                 border_color = na, bgcolor = colFVG, extend = extend.right, text = "FVG", text_color = color.new(color.aqua, 30),
+                 text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top)
     if st == 2
         sweepExt := dir == 1 ? math.min(sweepExt, low) : math.max(sweepExt, high)
         depth = dir == 1 ? aLo - sweepExt : sweepExt - aHi
@@ -455,23 +480,37 @@ if barstate.isconfirmed
             sigInvalid := true
             stTxt := "INVALID: sweep extreme broken"
     else if st == 4 and bar_index > pocBar
-        touched = dir == 1 ? low <= poc + retestTicks * tick : high >= poc - retestTicks * tick
-        rightSide = dir == 1 ? close > poc : close < poc
-        if not rightSide
+        rt = retestTicks * tick
+        fvgOK = useFVG and not na(fvgFar)
+        // the level that must hold: POC, or the FVG's far edge if that is deeper
+        holdLvl = fvgOK ? (dir == 1 ? math.min(poc, fvgFar) : math.max(poc, fvgFar)) : poc
+        holds = dir == 1 ? close > holdLvl : close < holdLvl
+        pocTouch = dir == 1 ? low <= poc + rt : high >= poc - rt
+        pocRight = dir == 1 ? close > poc : close < poc
+        fvgTouch = fvgOK and (dir == 1 ? low <= fvgNear + rt : high >= fvgNear - rt)
+        fvgRight = fvgOK and (dir == 1 ? close > fvgFar and close > open : close < fvgFar and close < open)
+        byPOC = pocTouch and pocRight
+        byFVG = fvgTouch and fvgRight
+        if not holds
             failCnt += 1
             if failCnt >= failCloses
                 st := 6
                 doneBar := bar_index
                 sigFail := true
-                stTxt := "POC retest FAILED"
-                amdLbl("✗ POC", color.red, dir == 1)
+                eZone := fvgOK and holdLvl == fvgFar ? "FVG" : "POC"
+                stTxt := eZone + " retest FAILED"
+                amdLbl("✗ " + eZone, color.red, dir == 1)
         else
             failCnt := 0
-            if touched and not noEntryTime
+            if fvgOK and not pocRight
+                stTxt := "POC lost, holding FVG: wait for FVG retest"
+            if (byPOC or byFVG) and not noEntryTime
+                eZone := byPOC ? "POC" : "FVG"
+                zoneLvl = byPOC ? poc : fvgFar
                 entry = close
                 float base = na
                 if stopMode == "Retest candle"
-                    base := dir == 1 ? math.min(low, poc) : math.max(high, poc)
+                    base := dir == 1 ? math.min(low, zoneLvl) : math.max(high, zoneLvl)
                 else if stopMode == "Higher low / range edge"
                     base := dir == 1 ? math.min(val, aLo, low) : math.max(vah, aHi, high)
                 else
@@ -497,8 +536,8 @@ if barstate.isconfirmed
                     eT1 := t1
                     eT2 := na(t2) ? t1 + dir * risk : t2
                     eQty := qty
-                    stTxt := "POC retest CONFIRMED: entry"
-                    amdLbl("✓ POC", color.green, dir == -1)
+                    stTxt := eZone + " retest CONFIRMED: entry"
+                    amdLbl("✓ " + eZone, color.green, dir == -1)
             else if bar_index - pocBar > retestBars
                 st := 5
                 doneBar := bar_index
@@ -581,8 +620,8 @@ if sigManip
 if sigPOC
     alert(j("Distribution: closed beyond POC " + str.tostring(poc, format.mintick) + " - waiting for retest"), alert.freq_once_per_bar_close)
 if sigEntry
-    alert(j("POC retest CONFIRMED - " + (dir == 1 ? "LONG " : "SHORT ") + str.tostring(eQty) + " @ " + str.tostring(close, format.mintick) + " | stop " + str.tostring(eStop, format.mintick) + " | T1 " + str.tostring(eT1, format.mintick) + " | T2 " + str.tostring(eT2, format.mintick)), alert.freq_once_per_bar_close)
+    alert(j(eZone + " retest CONFIRMED - " + (dir == 1 ? "LONG " : "SHORT ") + str.tostring(eQty) + " @ " + str.tostring(close, format.mintick) + " | stop " + str.tostring(eStop, format.mintick) + " | T1 " + str.tostring(eT1, format.mintick) + " | T2 " + str.tostring(eT2, format.mintick)), alert.freq_once_per_bar_close)
 if sigFail
-    alert(j("POC retest FAILED at " + str.tostring(poc, format.mintick)), alert.freq_once_per_bar_close)
+    alert(j(eZone + " retest FAILED at " + str.tostring(eZone == "FVG" ? fvgFar : poc, format.mintick)), alert.freq_once_per_bar_close)
 if sigInvalid
     alert(j("INVALID - sweep extreme " + str.tostring(sweepExt, format.mintick) + " broken"), alert.freq_once_per_bar_close)

@@ -25,7 +25,13 @@ A TradingView Pine v6 strategy that combines a built-in volume profile with ICT'
 
 ## Alerts
 
-Set the alert condition to **Any alert() function call**, point the webhook at your Discord channel, and leave the message box empty. The script writes its own JSON. It sends an alert for each of these events:
+Pick **Order fills and alert() function calls** as the alert type and point the webhook at your Discord channel. The script writes its own JSON for the setup alerts. Order fills (T1, T2, Stop, BE, Flat) use the alert's Message box, so paste this into it:
+
+```
+{"content": "AMD VP | {{strategy.order.comment}} | {{strategy.order.action}} {{strategy.order.contracts}} {{ticker}} @ {{strategy.order.price}}"}
+```
+
+It sends an alert for each of these events:
 
 - Manipulation
 - POC reclaim

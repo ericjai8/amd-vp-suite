@@ -1,30 +1,29 @@
 //@version=6
 // =====================================================================
-// AMD + Volume Profile Suite  [MNQ]   v3 (rules in minutes, works on any timeframe)
+// AMD + Volume Profile Suite  [MNQ]   v4: continuous detection, any session
 //
-// 1. ACCUMULATION  Inside a search window (default Asia, 6pm-2am ET) the script
-//                  finds the LATEST TIGHT RANGE before the window ends:
-//                    - starts where the last impulse leg ended
-//                    - walks back while the candles stay SIDEWAYS: range height
-//                      <= K x the median candle, efficiency (net / path) <= max,
-//                      and no trend/arc shape (quadratic-fit R² <= max)
-//                    - at least M bars long
-//                    - both edges tested at least K times (that builds liquidity)
-//                  Fails any rule -> "no accumulation", no AMD that day.
-//                  Built-in volume profile of that range -> POC, VAH, VAL.
-// 2. MANIPULATION  Price sweeps beyond the range and CLOSES back inside within N bars.
-// 3. DISTRIBUTION  Price closes beyond the POC in the reclaim direction.
-// 4. POC RETEST    Pullback to the POC: close back on the right side -> CONFIRMED,
-//                  2 closes on the wrong side -> FAILED, sweep extreme broken -> INVALID.
-// Entry  close of the confirmed retest candle.
-// Stop   your choice: retest candle | higher low / range edge | sweep extreme (the LL),
-//        never closer than a minimum distance (x ATR).
-// Size   contracts = dollar risk / (stop distance x point value), capped.
-// Targets next untaken liquidity (swings, range edge, PDH/PDL); T1 must be >= min R:R.
-// Exits  part at T1, rest at T2, stop to breakeven after T1, flat at 4:55pm ET.
-//
-// NOT BACKTESTED outside TradingView. Judge it with the Strategy Tester and paper
-// trading. Every signal is on a closed bar; nothing repaints.
+// 1. ACCUMULATION  Checked on EVERY bar: do the most recent bars form a sideways
+//                  range? Walking back from the current bar, the range
+//                    - starts where the last impulse leg ended (a stretch that
+//                      moved hard in one direction)
+//                    - stays narrow: height <= K x the median candle
+//                    - is choppy: efficiency (net move / path) <= max
+//                    - has no trend/arc shape: quadratic-fit R² <= max
+//                    - lasts at least the minimum time, both edges tested
+//                  A dotted box shows the range while it is forming.
+// 2. MANIPULATION  Price trades beyond the range (that locks it in as "A": volume
+//                  profile, POC, VAH, VAL), then CLOSES back inside in time.
+//                  Too deep, or no reclaim = a real breakout: setup dropped.
+// 3. DISTRIBUTION  Close beyond the POC in the reclaim direction ("D").
+// 4. POC RETEST    Pullback to the POC: close back on the right side = CONFIRMED
+//                  (entry); closes on the wrong side = FAILED; sweep extreme
+//                  broken = INVALID.
+// Stop   retest candle | higher low / range edge | sweep extreme, min distance.
+// Size   contracts = $ risk / (stop points x point value), capped.
+// Targets next untaken liquidity; T1 must be >= min R:R. Part at T1, rest at T2,
+//        breakeven after T1. Optional flat at 4:55pm ET (prop rule).
+// Rules are in minutes, so they mean the same on any timeframe (tuned on 5m).
+// NOT BACKTESTED outside TradingView. Every signal is on a closed bar.
 // =====================================================================
 strategy("AMD + VP Suite [MNQ]", shorttitle = "AMD VP", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1,
@@ -35,23 +34,19 @@ strategy("AMD + VP Suite [MNQ]", shorttitle = "AMD VP", overlay = true,
 
 // ---------------------------------------------------------------- inputs
 TZ = "America/New_York"
-gS = "Sessions (ET)"
-accSess   = input.session("1800-0200", "Accumulation search window", group = gS, tooltip = "Where to look for the accumulation range. Auto-fit finds the latest tight range inside it. For London try 0200-0830; for the NY open range 0930-1030.")
-tradeSess = input.session("0200-1655", "Trade window (sweeps, entries)", group = gS)
-flatHM    = input.int(1655, "Flat all trades at (HHMM ET)", group = gS)
 
 gQ = "Accumulation detection"
-accMode    = input.string("Auto-fit (latest tight range)", "Mode", options = ["Auto-fit (latest tight range)", "Whole window"], group = gQ)
-maxHgtK    = input.float(8.0, "Max range height (x median candle)", minval = 2, step = 0.5, group = gQ, tooltip = "Range height divided by the median candle (high-low) inside it. Sideways ranges are only a handful of candles tall; a trend leg is many.")
-maxER      = input.float(0.30, "Max efficiency (0 = chop, 1 = straight line)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Net close-to-close move divided by the total distance travelled. Sideways candles go back and forth, so this stays low.")
-impMin     = input.int(30, "Stop at an impulse leg: minutes", minval = 5, group = gQ, tooltip = "Accumulation starts where the last strong move ends. Walking back, the box stops if the N minutes before a point moved hard in one direction.")
+maxLookMin = input.int(480, "Longest range to consider (minutes)", minval = 30, group = gQ)
+minAccMin  = input.int(60, "Min length (minutes)", minval = 5, group = gQ)
+maxHgtK    = input.float(8.0, "Max range height (x median candle)", minval = 2, step = 0.5, group = gQ, tooltip = "Range height divided by the median candle (high-low). Sideways ranges are only a handful of candles tall.")
+maxER      = input.float(0.30, "Max efficiency (0 = chop, 1 = straight line)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ)
+maxShape   = input.float(0.40, "Max trend/arc shape (curve fit R²)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "Grinds, V's and rounded arcs fit a curve (high). Real ranges are noise around a flat middle (low).")
+impMin     = input.int(30, "Impulse leg: minutes", minval = 5, group = gQ, tooltip = "The range starts where the last strong one-way move ended.")
 impK       = input.float(4.0, "Impulse size (x median candle)", minval = 1.0, step = 0.5, group = gQ)
 impER      = input.float(0.5, "Impulse straightness (efficiency)", minval = 0.1, maxval = 1.0, step = 0.05, group = gQ)
-maxShape   = input.float(0.40, "Max trend/arc shape (curve fit R²)", minval = 0.05, maxval = 1.0, step = 0.05, group = gQ, tooltip = "How much of the movement a smooth curve explains. Grinds, V's and rounded arcs fit a curve (high); real ranges are noise around a flat middle (low).")
-minAccMin  = input.int(60, "Min length (minutes)", minval = 5, group = gQ, tooltip = "Rules are in minutes so they mean the same thing on 1m, 5m or 30m. Never fewer than 4 bars.")
-endSlackMin = input.int(120, "Range may end up to N minutes before the window ends", minval = 0, group = gQ, tooltip = "Tries every end point in the last N minutes of the window and keeps the longest valid range.")
-minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ, tooltip = "Separate visits to the top and bottom of the range. This is what builds the liquidity a sweep goes after.")
-touchPct   = input.float(20, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ, tooltip = "A bar 'tests' an edge if it trades within this % of the range from the high or low.")
+minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ)
+touchPct   = input.float(20, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ)
+showForming = input.bool(true, "Show the range while it forms (dotted)", group = gQ)
 
 gV = "Volume profile"
 rows     = input.int(40, "Rows", minval = 10, maxval = 100, group = gV)
@@ -70,16 +65,17 @@ retestMin   = input.int(180, "Retest must come within (minutes)", minval = 5, gr
 failCloses  = input.int(2, "Failed retest = closes beyond POC", minval = 1, maxval = 5, group = gA)
 
 gR = "Stop, size & targets"
-stopMode   = input.string("Higher low / range edge", "Stop placement", options = ["Retest candle", "Higher low / range edge", "Sweep extreme (LL / HH)"], group = gR, tooltip = "Retest candle: tightest, easily wicked out. Higher low / range edge: below the lower of VAL and the range low (above for shorts). Sweep extreme: the real invalidation, widest.")
+stopMode   = input.string("Higher low / range edge", "Stop placement", options = ["Retest candle", "Higher low / range edge", "Sweep extreme (LL / HH)"], group = gR)
 stopTicks  = input.int(4, "Stop buffer (ticks)", minval = 0, group = gR)
 minStopATR = input.float(0.5, "Min stop distance (x ATR)", minval = 0.0, step = 0.1, group = gR)
-riskUSD    = input.float(300, "Risk per trade ($)", minval = 10, group = gR, tooltip = "Contracts = this / (stop points x point value). A wide stop means fewer contracts, not more risk.")
+riskUSD    = input.float(300, "Risk per trade ($)", minval = 10, group = gR)
 maxQty     = input.int(6, "Max contracts", minval = 1, group = gR)
 t1Pct      = input.float(50, "% of position at T1", minval = 0, maxval = 100, group = gR)
 minRR      = input.float(1.5, "Min R:R to T1", minval = 0.5, step = 0.25, group = gR)
 beAfterT1  = input.bool(true, "Stop to breakeven after T1", group = gR)
 tradeLong  = input.bool(true, "Take longs", group = gR)
 tradeShort = input.bool(true, "Take shorts", group = gR)
+useFlat    = input.bool(true, "Flat by 4:55pm ET, no entries after 4:25pm (prop rule)", group = gR)
 
 gL = "Liquidity"
 pivLen     = input.int(5, "Swing strength", minval = 2, maxval = 20, group = gL)
@@ -97,278 +93,179 @@ showDash   = input.bool(true, "Dashboard", group = gD)
 tfSec = timeframe.in_seconds()
 toBars(int mins, int floorBars) =>
     math.max(floorBars, int(math.ceil(mins * 60.0 / tfSec)))
+maxLook     = math.min(toBars(maxLookMin, 10), 400)
 minAccBars  = toBars(minAccMin, 4)
-endSlack    = toBars(endSlackMin, 0)
 impBars     = toBars(impMin, 2)
 reclaimBars = toBars(reclaimMin, 1)
 retestBars  = toBars(retestMin, 2)
+medLen      = math.max(20, minAccBars * 2)
+
 tick  = syminfo.mintick
 atr   = ta.atr(14)
-inAcc   = not na(time(timeframe.period, accSess, TZ))
-inTrade = not na(time(timeframe.period, tradeSess, TZ))
-hmNow   = hour(time, TZ) * 100 + minute(time, TZ)
-accStart = inAcc and not inAcc[1]
-accEnd   = not inAcc and inAcc[1]
+hmNow = hour(time, TZ) * 100 + minute(time, TZ)
+noEntryTime = useFlat and hmNow >= 1625 and hmNow < 1800
 
 pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
 pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
 
-// ---------------------------------------------------------------- search-window data
-var array<float> aO  = array.new<float>()
-var array<float> aH  = array.new<float>()
-var array<float> aL  = array.new<float>()
-var array<float> aC  = array.new<float>()
-var array<float> aV  = array.new<float>()
-var array<bool>  aUp = array.new<bool>()
-var array<int>   aB  = array.new<int>()
-if accStart
-    array.clear(aO)
-    array.clear(aH)
-    array.clear(aL)
-    array.clear(aC)
-    array.clear(aV)
-    array.clear(aUp)
-    array.clear(aB)
-if inAcc
-    array.push(aO, open)
-    array.push(aH, high)
-    array.push(aL, low)
-    array.push(aC, close)
-    array.push(aV, volume)
-    array.push(aUp, close >= open)
-    array.push(aB, bar_index)
+medC    = ta.percentile_nearest_rank(high - low, medLen, 50)          // typical candle
+impNet  = math.abs(close - close[impBars])
+impPath = math.sum(math.abs(close - close[1]), impBars)
 
-// ---------------------------------------------------------------- profile + state
-var float rngH = na
-var float rngL = na
-var float poc  = na
-var float vah  = na
-var float val  = na
-var int   accBar0 = na
+// ---------------------------------------------------------------- continuous range detection
+// Longest valid sideways range ENDING AT THIS BAR. Outputs: rLen (0 = none), rHi, rLo.
+int   rLen = 0
+float rHi  = na
+float rLo  = na
+if bar_index > maxLook + impBars + 2 and medC > 0
+    float hh = high
+    float ll = low
+    float path = 0.0
+    float S0 = 1.0
+    float S1 = 0.0
+    float S2 = 0.0
+    float S3 = 0.0
+    float S4 = 0.0
+    float Sy = 0.0
+    float Sxy = 0.0
+    float Sx2y = 0.0
+    float Syy = 0.0
+    for j = 1 to maxLook
+        // the range starts where the last impulse leg ended
+        if impPath[j] > 0 and impNet[j] >= impK * medC and impNet[j] / impPath[j] >= impER
+            break
+        nh = math.max(hh, high[j])
+        nl = math.min(ll, low[j])
+        if (nh - nl) / medC > maxHgtK
+            break
+        hh := nh
+        ll := nl
+        path += math.abs(close[j - 1] - close[j])
+        x = float(j)
+        y = close[j] - close
+        S0 += 1
+        S1 += x
+        S2 += x * x
+        S3 += x * x * x
+        S4 += x * x * x * x
+        Sy += y
+        Sxy += x * y
+        Sx2y += x * x * y
+        Syy += y * y
+        len = j + 1
+        if len >= minAccBars
+            er = path > 0 ? math.abs(close - close[j]) / path : 1.0
+            if er <= maxER
+                det = S4 * (S2 * S0 - S1 * S1) - S3 * (S3 * S0 - S1 * S2) + S2 * (S3 * S1 - S2 * S2)
+                if math.abs(det) > 1e-9
+                    qa = (Sx2y * (S2 * S0 - S1 * S1) - S3 * (Sxy * S0 - S1 * Sy) + S2 * (Sxy * S1 - S2 * Sy)) / det
+                    qb = (S4 * (Sxy * S0 - S1 * Sy) - Sx2y * (S3 * S0 - S1 * S2) + S2 * (S3 * Sy - Sxy * S2)) / det
+                    qc = (S4 * (S2 * Sy - Sxy * S1) - S3 * (S3 * Sy - Sxy * S2) + Sx2y * (S3 * S1 - S2 * S2)) / det
+                    ssTot = Syy - Sy * Sy / S0
+                    ssRes = Syy - (qa * Sx2y + qb * Sxy + qc * Sy)
+                    r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0.0
+                    if r2 <= maxShape
+                        rLen := len
+                        rHi := hh
+                        rLo := ll
+
+// edge tests of a range covering bars [off, off + len - 1] bars back
+edgeTests(int off, int len, float hi, float lo) =>
+    zone = (hi - lo) * touchPct / 100
+    int tH = 0
+    int tL = 0
+    bool inH = false
+    bool inL = false
+    for k = off + len - 1 to off
+        nowH = high[k] >= hi - zone
+        nowL = low[k] <= lo + zone
+        if nowH and not inH
+            tH += 1
+        if nowL and not inL
+            tL += 1
+        inH := nowH
+        inL := nowL
+    [tH, tL]
+
+// ---------------------------------------------------------------- state
+var float aHi = na
+var float aLo = na
+var float poc = na
+var float vah = na
+var float val = na
 var array<box> vpBoxes = array.new<box>()
 var line lPOC = na
 var line lVAH = na
 var line lVAL = na
-
-// AMD state: 0 idle, 1 watching for sweep, 2 swept (wait reclaim), 3 manipulation confirmed (wait POC),
-//            4 beyond POC (wait retest), 5 traded / done, 6 failed, 7 invalid
+var box formBox = na
+// 0 scanning, 2 swept (wait reclaim), 3 manipulation (wait POC), 4 beyond POC (wait retest),
+// 5 traded / done, 6 failed, 7 invalid / breakout
 var int   st       = 0
 var int   dir      = 0
 var float sweepExt = na
 var int   sweepBar = na
 var int   pocBar   = na
 var int   failCnt  = 0
-var string stTxt   = "waiting for the search window"
+var int   doneBar  = 0
+var string stTxt   = "scanning for accumulation"
 
-// end the previous day's lines when a new search window starts
-if accStart
-    if not na(lPOC)
-        line.set_extend(lPOC, extend.none)
-        line.set_x2(lPOC, bar_index)
-        line.set_extend(lVAH, extend.none)
-        line.set_x2(lVAH, bar_index)
-        line.set_extend(lVAL, extend.none)
-        line.set_x2(lVAL, bar_index)
-    st := 0
-    dir := 0
-    poc := na
-    stTxt := "searching for accumulation"
+amdLbl(string txt, color col, bool atHigh) =>
+    label.new(bar_index, atHigh ? high : low, txt, style = atHigh ? label.style_label_down : label.style_label_up,
+         color = col, textcolor = color.white, size = size.small)
 
-effic(array<float> cs, int a, int b) =>
-    float pth = 0.0
-    for i = a + 1 to b
-        pth += math.abs(array.get(cs, i) - array.get(cs, i - 1))
-    pth > 0 ? math.abs(array.get(cs, b) - array.get(cs, a)) / pth : 1.0
-
-if accEnd and array.size(aH) > minAccBars
-    n = array.size(aH)
-    // ---- 1. find the sideways candles: from each end point in the last `endSlack` bars, walk back
-    //         while the span stays narrow (height <= K x median candle). A span qualifies when it is
-    //         choppy (efficiency <= max) and has no trend/arc shape (quadratic-fit R² <= max).
-    //         Keep the longest qualifying span.
-    int s0 = 0
-    int e0 = n - 1
-    float hi = array.max(aH)
-    float lo = array.min(aL)
-    if accMode == "Auto-fit (latest tight range)"
-        int bestLen = 0
-        for e = n - 1 to math.max(1, n - 1 - endSlack)
-            float h_ = array.get(aH, e)
-            float l_ = array.get(aL, e)
-            float path = 0.0
-            float ce = array.get(aC, e)
-            // running sums for a quadratic fit of close vs. x (x = bars back from e), y centred on ce
-            float S0 = 1.0
-            float S1 = 0.0
-            float S2 = 0.0
-            float S3 = 0.0
-            float S4 = 0.0
-            float Sy = 0.0
-            float Sxy = 0.0
-            float Sx2y = 0.0
-            float Syy = 0.0
-            rngs = array.new<float>()
-            array.push(rngs, array.get(aH, e) - array.get(aL, e))
-            for i = e - 1 to 0
-                // stop at the end of the last impulse leg (the impBars bars ending at i moved hard one way)
-                if array.size(rngs) >= 6 and i - impBars >= 0
-                    med0 = array.median(rngs)
-                    float pth = 0.0
-                    for k = i - impBars + 1 to i
-                        pth += math.abs(array.get(aC, k) - array.get(aC, k - 1))
-                    net = math.abs(array.get(aC, i) - array.get(aC, i - impBars))
-                    if med0 > 0 and pth > 0 and net >= impK * med0 and net / pth >= impER
-                        break
-                nh = math.max(h_, array.get(aH, i))
-                nl = math.min(l_, array.get(aL, i))
-                array.push(rngs, array.get(aH, i) - array.get(aL, i))
-                med = array.median(rngs)
-                if array.size(rngs) >= 6 and med > 0 and (nh - nl) / med > maxHgtK
-                    break
-                h_ := nh
-                l_ := nl
-                path += math.abs(array.get(aC, i + 1) - array.get(aC, i))
-                x = float(e - i)
-                y = array.get(aC, i) - ce
-                S0 += 1
-                S1 += x
-                S2 += x * x
-                S3 += x * x * x
-                S4 += x * x * x * x
-                Sy += y
-                Sxy += x * y
-                Sx2y += x * x * y
-                Syy += y * y
-                spanLen = e - i + 1
-                if spanLen > bestLen and spanLen >= minAccBars
-                    er = path > 0 ? math.abs(ce - array.get(aC, i)) / path : 1.0
-                    if er <= maxER
-                        // solve [S4 S3 S2; S3 S2 S1; S2 S1 S0] [a b c] = [Sx2y Sxy Sy] (Cramer)
-                        det = S4 * (S2 * S0 - S1 * S1) - S3 * (S3 * S0 - S1 * S2) + S2 * (S3 * S1 - S2 * S2)
-                        if math.abs(det) > 1e-9
-                            qa = (Sx2y * (S2 * S0 - S1 * S1) - S3 * (Sxy * S0 - S1 * Sy) + S2 * (Sxy * S1 - S2 * Sy)) / det
-                            qb = (S4 * (Sxy * S0 - S1 * Sy) - Sx2y * (S3 * S0 - S1 * S2) + S2 * (S3 * Sy - Sxy * S2)) / det
-                            qc = (S4 * (S2 * Sy - Sxy * S1) - S3 * (S3 * Sy - Sxy * S2) + Sx2y * (S3 * S1 - S2 * S2)) / det
-                            ssTot = Syy - Sy * Sy / S0
-                            ssRes = Syy - (qa * Sx2y + qb * Sxy + qc * Sy)
-                            r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0.0
-                            if r2 <= maxShape
-                                bestLen := spanLen
-                                s0 := i
-                                e0 := e
-                                hi := h_
-                                lo := l_
-        // trim the lead-in: start where closes first sit inside the span's core (15th-85th percentile)
-        if bestLen > 0
-            core = array.new<float>()
-            for i = s0 to e0
-                array.push(core, array.get(aC, i))
-            q1 = array.percentile_nearest_rank(core, 15)
-            q2 = array.percentile_nearest_rank(core, 85)
-            while s0 < e0 - minAccBars and (array.get(aC, s0) < q1 or array.get(aC, s0) > q2)
-                s0 += 1
-            hi := array.get(aH, s0)
-            lo := array.get(aL, s0)
-            for i = s0 to e0
-                hi := math.max(hi, array.get(aH, i))
-                lo := math.min(lo, array.get(aL, i))
-    len = e0 - s0 + 1
-    hgt = hi - lo
-    // ---- 2. checks
-    string why = ""
-    if len < minAccBars
-        why := "no sideways stretch of " + str.tostring(minAccBars) + "+ bars (longest " + str.tostring(len) + ")"
-    else if accMode == "Whole window" and effic(aC, s0, e0) > maxER
-        why := "not sideways (efficiency " + str.tostring(effic(aC, s0, e0), "#.##") + ")"
-    else
-        zone = hgt * touchPct / 100
-        int tH = 0
-        int tL = 0
-        bool inH = false
-        bool inL = false
-        for i = s0 to e0
-            nowH = array.get(aH, i) >= hi - zone
-            nowL = array.get(aL, i) <= lo + zone
-            if nowH and not inH
-                tH += 1
-            if nowL and not inL
-                tL += 1
-            inH := nowH
-            inL := nowL
-        if tH < minTouches or tL < minTouches
-            why := "edges tested " + str.tostring(tH) + "x high / " + str.tostring(tL) + "x low"
-    b0 = array.get(aB, s0)
-    bEnd = array.get(aB, e0)
-    if why != ""
-        box.new(b0, hi, bEnd, lo, border_color = color.new(color.gray, 50), border_style = line.style_dashed,
-             bgcolor = color.new(color.gray, 96), text = "no accumulation: " + why, text_color = color.gray,
-             text_size = size.small, text_halign = text.align_left, text_valign = text.align_top)
-        stTxt := "no accumulation (" + why + ")"
-    else
-        rngH := hi
-        rngL := lo
-        accBar0 := b0
-        // ---- 3. volume profile of the fitted range
-        float step = hgt / rows
-        up = array.new<float>(rows, 0.0)
-        dn = array.new<float>(rows, 0.0)
-        for i = s0 to e0
-            bh = array.get(aH, i)
-            bl = array.get(aL, i)
-            bv = array.get(aV, i)
-            r0 = math.max(0, math.min(rows - 1, int(math.floor((bl - lo) / step))))
-            r1 = math.max(0, math.min(rows - 1, int(math.floor((bh - lo) / step))))
-            share = bv / (r1 - r0 + 1)
-            for r = r0 to r1
-                if array.get(aUp, i)
-                    array.set(up, r, array.get(up, r) + share)
-                else
-                    array.set(dn, r, array.get(dn, r) + share)
-        tot = array.new<float>(rows, 0.0)
-        for r = 0 to rows - 1
-            array.set(tot, r, array.get(up, r) + array.get(dn, r))
-        pr = array.indexof(tot, array.max(tot))
-        poc := lo + (pr + 0.5) * step
-        target = array.sum(tot) * vaPct / 100
-        int vlo = pr
-        int vhi = pr
-        float acc = array.get(tot, pr)
-        while acc < target and (vlo > 0 or vhi < rows - 1)
-            nxtUp = vhi < rows - 1 ? array.get(tot, vhi + 1) : -1.0
-            nxtDn = vlo > 0 ? array.get(tot, vlo - 1) : -1.0
-            if nxtUp >= nxtDn
-                vhi += 1
-                acc += nxtUp
+// lock in the range that ended on the previous bar: profile, levels, box
+lockRange(int len) =>
+    float hi = high[1]
+    float lo = low[1]
+    for k = 1 to len
+        hi := math.max(hi, high[k])
+        lo := math.min(lo, low[k])
+    float step = (hi - lo) / rows
+    up = array.new<float>(rows, 0.0)
+    dn = array.new<float>(rows, 0.0)
+    for k = 1 to len
+        r0 = math.max(0, math.min(rows - 1, int(math.floor((low[k] - lo) / step))))
+        r1 = math.max(0, math.min(rows - 1, int(math.floor((high[k] - lo) / step))))
+        share = volume[k] / (r1 - r0 + 1)
+        for r = r0 to r1
+            if close[k] >= open[k]
+                array.set(up, r, array.get(up, r) + share)
             else
-                vlo -= 1
-                acc += nxtDn
-        vah := lo + (vhi + 1) * step
-        val := lo + vlo * step
-        // ---- draw
-        if showVP
-            while array.size(vpBoxes) > rows * 6
-                box.delete(array.shift(vpBoxes))
-            mx = array.max(tot)
-            for r = 0 to rows - 1
-                wTot = int(math.round(vpWidth * array.get(tot, r) / mx))
-                wUp = int(math.round(vpWidth * array.get(up, r) / mx))
-                y1 = lo + r * step
-                y2 = y1 + step
-                if wUp > 0
-                    array.push(vpBoxes, box.new(b0, y2, b0 + wUp, y1, border_color = na, bgcolor = colUp))
-                if wTot - wUp > 0
-                    array.push(vpBoxes, box.new(b0 + wUp, y2, b0 + wTot, y1, border_color = na, bgcolor = colDn))
-        box.new(b0, hi, bEnd, lo, border_color = color.new(color.gray, 40), bgcolor = color.new(color.gray, 92),
-             text = "A", text_color = color.gray, text_size = size.normal, text_halign = text.align_right, text_valign = text.align_top)
-        if showLevels
-            lPOC := line.new(b0, poc, bar_index, poc, color = color.red, width = 2, extend = extend.right)
-            lVAH := line.new(b0, vah, bar_index, vah, color = color.new(color.white, 20), extend = extend.right)
-            lVAL := line.new(b0, val, bar_index, val, color = color.new(color.white, 20), extend = extend.right)
-        st := 1
-        dir := 0
-        failCnt := 0
-        sweepExt := na
-        stTxt := "accumulation found: watching for a sweep"
+                array.set(dn, r, array.get(dn, r) + share)
+    tot = array.new<float>(rows, 0.0)
+    for r = 0 to rows - 1
+        array.set(tot, r, array.get(up, r) + array.get(dn, r))
+    pr = array.indexof(tot, array.max(tot))
+    target = array.sum(tot) * vaPct / 100
+    int vlo = pr
+    int vhi = pr
+    float acc = array.get(tot, pr)
+    while acc < target and (vlo > 0 or vhi < rows - 1)
+        nxtUp = vhi < rows - 1 ? array.get(tot, vhi + 1) : -1.0
+        nxtDn = vlo > 0 ? array.get(tot, vlo - 1) : -1.0
+        if nxtUp >= nxtDn
+            vhi += 1
+            acc += nxtUp
+        else
+            vlo -= 1
+            acc += nxtDn
+    b0 = bar_index - len
+    if showVP
+        while array.size(vpBoxes) > rows * 6
+            box.delete(array.shift(vpBoxes))
+        mx = array.max(tot)
+        for r = 0 to rows - 1
+            wTot = int(math.round(vpWidth * array.get(tot, r) / mx))
+            wUp = int(math.round(vpWidth * array.get(up, r) / mx))
+            y1 = lo + r * step
+            y2 = y1 + step
+            if wUp > 0
+                array.push(vpBoxes, box.new(b0, y2, b0 + wUp, y1, border_color = na, bgcolor = colUp))
+            if wTot - wUp > 0
+                array.push(vpBoxes, box.new(b0 + wUp, y2, b0 + wTot, y1, border_color = na, bgcolor = colDn))
+    box.new(b0, hi, bar_index - 1, lo, border_color = color.new(color.gray, 40), bgcolor = color.new(color.gray, 92),
+         text = "A", text_color = color.gray, text_size = size.normal, text_halign = text.align_right, text_valign = text.align_top)
+    [hi, lo, lo + (pr + 0.5) * step, lo + (vhi + 1) * step, lo + vlo * step, b0]
 
 // ---------------------------------------------------------------- liquidity (untaken swings)
 var array<float> bslP = array.new<float>()
@@ -417,7 +314,7 @@ nextLiq(float from, int d, float minDist) =>
     if array.size(src) > 0
         for i = 0 to array.size(src) - 1
             array.push(cands, array.get(src, i))
-    array.push(cands, d == 1 ? rngH : rngL)
+    array.push(cands, d == 1 ? aHi : aLo)
     array.push(cands, d == 1 ? pdh : pdl)
     for i = 0 to array.size(cands) - 1
         p = array.get(cands, i)
@@ -425,10 +322,6 @@ nextLiq(float from, int d, float minDist) =>
             if na(best) or (p - from) * d < (best - from) * d
                 best := p
     best
-
-amdLbl(string txt, color col, bool atHigh) =>
-    label.new(bar_index, atHigh ? high : low, txt, style = atHigh ? label.style_label_down : label.style_label_up,
-         color = col, textcolor = color.white, size = size.small)
 
 // ---------------------------------------------------------------- AMD state machine
 sigEntry   = false
@@ -440,32 +333,58 @@ float eStop = na
 float eT1   = na
 float eT2   = na
 int   eQty  = 0
+pos = strategy.position_size
 
-if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
-    if st == 1
-        if low <= rngL - sweepTicks * tick and tradeLong
-            st := 2
-            dir := 1
-            sweepExt := low
-            sweepBar := bar_index
-        else if high >= rngH + sweepTicks * tick and tradeShort
-            st := 2
-            dir := -1
-            sweepExt := high
-            sweepBar := bar_index
+if barstate.isconfirmed
+    // finished setups: back to scanning once flat
+    if (st == 5 or st == 6 or st == 7) and pos == 0 and bar_index > doneBar
+        st := 0
+        stTxt := "scanning for accumulation"
+    // 0 -> 2: a valid range ended on the previous bar and this bar trades beyond it
+    if st == 0 and rLen[1] >= minAccBars and not noEntryTime
+        breakDn = low <= rLo[1] - sweepTicks * tick and tradeLong
+        breakUp = high >= rHi[1] + sweepTicks * tick and tradeShort
+        if breakDn or breakUp
+            [tH, tL] = edgeTests(1, rLen[1], rHi[1], rLo[1])
+            if tH >= minTouches and tL >= minTouches
+                if not na(lPOC)
+                    line.set_extend(lPOC, extend.none)
+                    line.set_x2(lPOC, bar_index)
+                    line.set_extend(lVAH, extend.none)
+                    line.set_x2(lVAH, bar_index)
+                    line.set_extend(lVAL, extend.none)
+                    line.set_x2(lVAL, bar_index)
+                [hi_, lo_, poc_, vah_, val_, b0_] = lockRange(rLen[1])
+                aHi := hi_
+                aLo := lo_
+                poc := poc_
+                vah := vah_
+                val := val_
+                if showLevels
+                    lPOC := line.new(b0_, poc, bar_index, poc, color = color.red, width = 2, extend = extend.right)
+                    lVAH := line.new(b0_, vah, bar_index, vah, color = color.new(color.white, 20), extend = extend.right)
+                    lVAL := line.new(b0_, val, bar_index, val, color = color.new(color.white, 20), extend = extend.right)
+                st := 2
+                dir := breakDn ? 1 : -1
+                sweepExt := breakDn ? low : high
+                sweepBar := bar_index
+                failCnt := 0
+                stTxt := "accumulation broken: sweep or breakout?"
     if st == 2
         sweepExt := dir == 1 ? math.min(sweepExt, low) : math.max(sweepExt, high)
-        depth = dir == 1 ? rngL - sweepExt : sweepExt - rngH
-        if depth > maxDepthPct / 100 * (rngH - rngL)
+        depth = dir == 1 ? aLo - sweepExt : sweepExt - aHi
+        if depth > maxDepthPct / 100 * (aHi - aLo)
             st := 7
+            doneBar := bar_index
             stTxt := "breakout, not a sweep"
-        else if (dir == 1 and close > rngL) or (dir == -1 and close < rngH)
+        else if (dir == 1 and close > aLo) or (dir == -1 and close < aHi)
             st := 3
             sigManip := true
             stTxt := "manipulation: sweep reclaimed"
             amdLbl("M", color.purple, dir == -1)
         else if bar_index - sweepBar >= reclaimBars
             st := 7
+            doneBar := bar_index
             stTxt := "no reclaim: accepted beyond range"
     else if st == 3
         if (dir == 1 and close > poc) or (dir == -1 and close < poc)
@@ -473,10 +392,11 @@ if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
             pocBar := bar_index
             failCnt := 0
             sigPOC := true
-            stTxt := "beyond POC: wait for retest"
+            stTxt := "distribution: beyond POC, wait for retest"
             amdLbl("D", color.teal, dir == -1)
         else if (dir == 1 and close < sweepExt) or (dir == -1 and close > sweepExt)
             st := 7
+            doneBar := bar_index
             sigInvalid := true
             stTxt := "INVALID: sweep extreme broken"
     else if st == 4 and bar_index > pocBar
@@ -486,18 +406,19 @@ if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
             failCnt += 1
             if failCnt >= failCloses
                 st := 6
+                doneBar := bar_index
                 sigFail := true
                 stTxt := "POC retest FAILED"
                 amdLbl("✗ POC", color.red, dir == 1)
         else
             failCnt := 0
-            if touched
+            if touched and not noEntryTime
                 entry = close
                 float base = na
                 if stopMode == "Retest candle"
                     base := dir == 1 ? math.min(low, poc) : math.max(high, poc)
                 else if stopMode == "Higher low / range edge"
-                    base := dir == 1 ? math.min(val, rngL, low) : math.max(vah, rngH, high)
+                    base := dir == 1 ? math.min(val, aLo, low) : math.max(vah, aHi, high)
                 else
                     base := sweepExt
                 stp = base - dir * stopTicks * tick
@@ -507,16 +428,15 @@ if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
                 qty = risk > 0 ? math.min(maxQty, int(math.floor(riskUSD / (risk * syminfo.pointvalue)))) : 0
                 t1 = nextLiq(entry, dir, minRR * risk)
                 t2 = na(t1) ? na : nextLiq(t1, dir, tick)
+                st := 5
+                doneBar := bar_index
                 if qty < 1
-                    st := 5
-                    stTxt := "retest held, but stop too wide for $" + str.tostring(riskUSD) + ": skipped"
+                    stTxt := "retest held, stop too wide for $" + str.tostring(riskUSD) + ": skipped"
                     amdLbl("✓ skip $", color.gray, dir == -1)
                 else if na(t1)
-                    st := 5
-                    stTxt := "retest held, but no target >= " + str.tostring(minRR) + "R: skipped"
+                    stTxt := "retest held, no target >= " + str.tostring(minRR) + "R: skipped"
                     amdLbl("✓ skip R", color.gray, dir == -1)
                 else
-                    st := 5
                     sigEntry := true
                     eStop := stp
                     eT1 := t1
@@ -526,11 +446,21 @@ if barstate.isconfirmed and not na(poc) and inTrade and not inAcc
                     amdLbl("✓ POC", color.green, dir == -1)
             else if bar_index - pocBar > retestBars
                 st := 5
+                doneBar := bar_index
                 stTxt := "no retest in time"
     if st == 6 and ((dir == 1 and close < sweepExt) or (dir == -1 and close > sweepExt))
         st := 7
+        doneBar := bar_index
         sigInvalid := true
         stTxt := "INVALID: sweep extreme broken"
+
+// range forming (live view)
+if showForming and barstate.islast
+    box.delete(formBox)
+    if st == 0 and rLen >= minAccBars
+        formBox := box.new(bar_index - rLen + 1, rHi, bar_index, rLo, border_color = color.new(color.yellow, 30),
+             border_style = line.style_dotted, bgcolor = color.new(color.yellow, 95), text = "forming", text_color = color.new(color.yellow, 30),
+             text_size = size.small, text_halign = text.align_right, text_valign = text.align_top)
 
 // ---------------------------------------------------------------- orders
 var float tStop = na
@@ -539,7 +469,6 @@ var float tT2   = na
 var float tEnt  = na
 var int   tQty  = 0
 var bool  t1Done = false
-pos = strategy.position_size
 if sigEntry and pos == 0
     tEnt := close
     tStop := eStop
@@ -560,7 +489,7 @@ if pos != 0
         strategy.exit("T1", id, qty = q1, limit = tT1, stop = tStop, comment_profit = "T1", comment_loss = "Stop")
     if qRest > 0
         strategy.exit("T2", id, qty = qRest, limit = tT2, stop = tStop, comment_profit = "T2", comment_loss = tStop == tEnt ? "BE" : "Stop")
-if pos != 0 and hmNow >= flatHM and hmNow < 1800
+if useFlat and pos != 0 and hmNow >= 1655 and hmNow < 1800
     strategy.close_all(comment = "Flat 4:55")
 
 // ---------------------------------------------------------------- plots
@@ -576,15 +505,15 @@ plot(showPD ? pdl : na, "PDL", color = colSSL, style = plot.style_stepline)
 var table dash = table.new(position.top_right, 2, 7, bgcolor = color.new(color.black, 20), border_width = 1)
 if showDash and barstate.islast
     table.cell(dash, 0, 0, "AMD", text_color = color.white)
-    table.cell(dash, 1, 0, dir == 1 ? "Bullish" : dir == -1 ? "Bearish" : "—", text_color = dir == 1 ? color.lime : dir == -1 ? color.red : color.gray)
+    table.cell(dash, 1, 0, st == 0 ? "—" : dir == 1 ? "Bullish" : "Bearish", text_color = st == 0 ? color.gray : dir == 1 ? color.lime : color.red)
     table.cell(dash, 0, 1, "State", text_color = color.white)
-    table.cell(dash, 1, 1, stTxt, text_color = color.yellow)
+    table.cell(dash, 1, 1, st == 0 and rLen >= minAccBars ? "range forming (" + str.tostring(rLen) + " bars)" : stTxt, text_color = color.yellow)
     table.cell(dash, 0, 2, "POC", text_color = color.white)
     table.cell(dash, 1, 2, na(poc) ? "—" : str.tostring(poc, format.mintick), text_color = color.red)
     table.cell(dash, 0, 3, "VAH / VAL", text_color = color.white)
     table.cell(dash, 1, 3, na(poc) ? "—" : str.tostring(vah, format.mintick) + " / " + str.tostring(val, format.mintick), text_color = color.white)
     table.cell(dash, 0, 4, "Range H / L", text_color = color.white)
-    table.cell(dash, 1, 4, na(poc) ? "—" : str.tostring(rngH, format.mintick) + " / " + str.tostring(rngL, format.mintick), text_color = color.gray)
+    table.cell(dash, 1, 4, na(aHi) ? "—" : str.tostring(aHi, format.mintick) + " / " + str.tostring(aLo, format.mintick), text_color = color.gray)
     table.cell(dash, 0, 5, "Sweep", text_color = color.white)
     table.cell(dash, 1, 5, na(sweepExt) ? "—" : str.tostring(sweepExt, format.mintick), text_color = color.purple)
     table.cell(dash, 0, 6, "Trade", text_color = color.white)
@@ -595,7 +524,7 @@ j(string s) => '{"content": "AMD VP | ' + syminfo.ticker + ' | ' + s + '"}'
 if sigManip
     alert(j((dir == 1 ? "Bullish" : "Bearish") + " manipulation: sweep to " + str.tostring(sweepExt, format.mintick) + " reclaimed"), alert.freq_once_per_bar_close)
 if sigPOC
-    alert(j("Closed beyond POC " + str.tostring(poc, format.mintick) + " - waiting for retest"), alert.freq_once_per_bar_close)
+    alert(j("Distribution: closed beyond POC " + str.tostring(poc, format.mintick) + " - waiting for retest"), alert.freq_once_per_bar_close)
 if sigEntry
     alert(j("POC retest CONFIRMED - " + (dir == 1 ? "LONG " : "SHORT ") + str.tostring(eQty) + " @ " + str.tostring(close, format.mintick) + " | stop " + str.tostring(eStop, format.mintick) + " | T1 " + str.tostring(eT1, format.mintick) + " | T2 " + str.tostring(eT2, format.mintick)), alert.freq_once_per_bar_close)
 if sigFail

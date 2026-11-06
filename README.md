@@ -10,8 +10,8 @@ Rules are set in minutes, not bars, so they behave the same on 1m, 5m, or 30m. T
 
 | Step | What the script looks for |
 |---|---|
-| **A: Accumulation** | Inside a search window (default: Asia, 6pm to 2am ET), it finds the latest tight range. It walks back from the end of the window, stopping where the last strong move (impulse leg) ended, while the candles stay sideways: the range is no taller than 8 median candles, the efficiency (net move ÷ distance travelled) stays at or below 0.30, and a smooth curve can't explain the movement (quadratic-fit R² ≤ 0.40), which rules out grinds, V's and rounded arcs. The range has to be at least 12 bars long, and each edge has to be tested at least twice. If any rule fails, the script draws "no accumulation" and doesn't look for AMD that day. It profiles the range it found, works out POC, VAH, and VAL, and draws the profile with buy volume and sell volume in separate colors. |
-| **M: Manipulation** | After that session ends, price sweeps beyond the range by at least 2 ticks and no deeper than 75% of the range height. It then closes back inside the range within 6 bars. |
+| **A: Accumulation** | Checked on every bar, in any session. Working back from the current bar, the recent bars count as accumulation when all of these hold: the range starts where the last impulse leg ended, it's no taller than 8 median candles, it's choppy (efficiency ≤ 0.30), it has no trend or arc shape (quadratic-fit R² ≤ 0.40), it lasts at least 60 minutes, and both edges have been tested at least twice. A dotted box shows the range while it forms. When price trades beyond it, the range is locked in as **A**, and its volume profile (POC, VAH, VAL) is drawn with buy and sell volume in separate colors. |
+| **M: Manipulation** | Price sweeps beyond the range by at least 2 ticks and no deeper than 75% of the range height. It then closes back inside the range within 30 minutes. If it goes deeper, or doesn't come back in time, it's treated as a real breakout and the script resumes scanning. |
 | **D: Distribution** | Price closes beyond the POC in the direction of the reclaim. |
 | **✓ POC: retest confirmed** | Price pulls back to within 8 ticks of the POC and closes back on the right side. The script enters on that close. |
 | **✗ POC: retest failed** | Two closes land on the wrong side of the POC. |
@@ -23,7 +23,7 @@ Rules are set in minutes, not bars, so they behave the same on 1m, 5m, or 30m. T
 - **Size:** contracts = dollar risk ÷ (stop points × point value), capped. A wide stop means fewer contracts.
 - **T1:** the next liquidity level that hasn't been taken yet. Candidates are untaken swing highs and lows, the range high or low, and PDH or PDL. If T1 is less than 1.5R away, the trade is skipped.
 - **T2:** the next liquidity level after T1.
-- **Exits:** 50% of the position comes off at T1. The rest go to T2, with the stop moved to breakeven once T1 fills. Everything is closed at 4:55pm ET.
+- **Exits:** 50% of the position comes off at T1. The rest go to T2, with the stop moved to breakeven once T1 fills. Everything is closed at 4:55pm ET, and no new entries are taken after 4:25pm (prop rule; this can be turned off).
 
 ## Alerts
 

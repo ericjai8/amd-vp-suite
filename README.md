@@ -8,8 +8,8 @@ A TradingView Pine v6 strategy that combines a built-in volume profile with ICT'
 
 | Step | What the script looks for |
 |---|---|
-| **A: Accumulation** | Inside a search window (default: Asia, 6pm to 2am ET), it finds the latest tight range. It grows the range backward from the window's last bar while the range stays under 2.5× the 1H ATR. The range has to be at least 12 bars long, its net move has to be under 40% of the range, and each edge has to be tested at least twice. If any rule fails, the script draws "no accumulation" and doesn't look for AMD that day. It profiles the range it found, works out POC, VAH, and VAL, and draws the profile with buy volume and sell volume in separate colors. |
-| **M: Manipulation** | After that session ends, price sweeps beyond the range by at least 2 ticks and no more than 2 ATR. It then closes back inside the range within 6 bars. |
+| **A: Accumulation** | Inside a search window (default: Asia, 6pm to 2am ET), it finds the latest tight range. It grows the range backward from the window's last bar while the range stays under 0.4× the daily ATR from prior days. The range has to be at least 12 bars long, its net move has to be under 50% of the range, and each edge has to be tested at least twice. If any rule fails, the script draws "no accumulation" and doesn't look for AMD that day. It profiles the range it found, works out POC, VAH, and VAL, and draws the profile with buy volume and sell volume in separate colors. |
+| **M: Manipulation** | After that session ends, price sweeps beyond the range by at least 2 ticks and no deeper than 75% of the range height. It then closes back inside the range within 6 bars. |
 | **D: Distribution** | Price closes beyond the POC in the direction of the reclaim. |
 | **✓ POC: retest confirmed** | Price pulls back to within 8 ticks of the POC and closes back on the right side. The script enters on that close. |
 | **✗ POC: retest failed** | Two closes land on the wrong side of the POC. |

@@ -10,8 +10,9 @@
 // Because the FVG needs the NEXT candle, a mark appears one bar late (on close
 // of the following candle) and is drawn on the displacement candle itself.
 // Bright = also broke structure. Faded = displacement without a break.
+// Opening price lines (ET): futures daily open 6pm, midnight open, 9:30 NY open.
 // =====================================================================
-indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300)
+indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300, max_lines_count = 100, max_labels_count = 300)
 
 len      = input.int(20, "Compare with last N candles", minval = 5)
 bodyK    = input.float(2.0, "Body size (x median body)", minval = 1.0, step = 0.25)
@@ -25,6 +26,15 @@ fvgBars  = input.int(15, "FVG box length (bars)", minval = 3)
 paintBar = input.bool(true, "Color the displacement candle")
 colUp    = input.color(color.new(#00e5ff, 0), "Up displacement")
 colDn    = input.color(color.new(#ff4081, 0), "Down displacement")
+
+gO = "Opening prices (ET)"
+showDO   = input.bool(true, "Daily open (6:00pm, futures day)", group = gO, inline = "do")
+colDO    = input.color(color.new(color.white, 20), "", group = gO, inline = "do")
+showMO   = input.bool(true, "Midnight open (12:00am)", group = gO, inline = "mo")
+colMO    = input.color(color.new(color.orange, 10), "", group = gO, inline = "mo")
+showNY   = input.bool(true, "NY open (9:30am)", group = gO, inline = "ny")
+colNY    = input.color(color.new(color.yellow, 10), "", group = gO, inline = "ny")
+keepDays = input.int(3, "Keep lines for last N days", minval = 1, maxval = 20, group = gO)
 
 body   = math.abs(close - open)
 rng    = high - low
@@ -66,3 +76,35 @@ alertcondition(dispUp, "Up displacement", "Up displacement candle on {{ticker}} 
 alertcondition(dispDn, "Down displacement", "Down displacement candle on {{ticker}} ({{interval}})")
 alertcondition(dispUp and bosUp, "Up displacement + BOS", "Up displacement + structure break on {{ticker}} ({{interval}})")
 alertcondition(dispDn and bosDn, "Down displacement + BOS", "Down displacement + structure break on {{ticker}} ({{interval}})")
+
+// ---------------------------------------------------------------- opening price lines
+TZ = "America/New_York"
+hm = hour(time, TZ) * 100 + minute(time, TZ)
+// true on the first bar at/after hhmm ET (handles the 5pm-6pm gap and weekends)
+startsAt(int target) =>
+    target == 0 ? dayofmonth(time, TZ) != dayofmonth(time[1], TZ) : hm >= target and (hm[1] < target or hm[1] > hm)
+
+var array<line>  doL = array.new<line>()
+var array<label> doT = array.new<label>()
+var array<line>  moL = array.new<line>()
+var array<label> moT = array.new<label>()
+var array<line>  nyL = array.new<line>()
+var array<label> nyT = array.new<label>()
+
+newOpen(array<line> ls, array<label> ts, string name, color col) =>
+    if array.size(ls) > 0
+        old = array.get(ls, array.size(ls) - 1)
+        line.set_extend(old, extend.none)
+        line.set_x2(old, bar_index)
+    array.push(ls, line.new(bar_index, open, bar_index + 1, open, color = col, width = 1, style = line.style_dashed, extend = extend.right))
+    array.push(ts, label.new(bar_index, open, name, style = label.style_label_lower_left, color = color.new(color.black, 100), textcolor = col, size = size.small))
+    if array.size(ls) > keepDays
+        line.delete(array.shift(ls))
+        label.delete(array.shift(ts))
+
+if showDO and startsAt(1800)
+    newOpen(doL, doT, "Daily open", colDO)
+if showMO and startsAt(0)
+    newOpen(moL, moT, "Midnight open", colMO)
+if showNY and startsAt(930)
+    newOpen(nyL, nyT, "NY open", colNY)

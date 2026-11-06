@@ -43,7 +43,8 @@ gQ = "Accumulation detection"
 accMode    = input.string("Auto-fit (latest tight range)", "Mode", options = ["Auto-fit (latest tight range)", "Whole window"], group = gQ)
 fitMaxATR  = input.float(2.5, "Max range height (x 1H ATR)", minval = 0.5, step = 0.25, group = gQ, tooltip = "Auto-fit grows the range backward from the window's last bar while it stays under this height.")
 minAccBars = input.int(12, "Min length (bars)", minval = 3, group = gQ, tooltip = "12 bars = 1 hour on 5m.")
-maxNetPct  = input.float(40, "Max net move (% of range)", minval = 10, maxval = 100, group = gQ, tooltip = "Open-to-close of the range. Big net move = trend, not balance.")
+maxNetPct  = input.float(50, "Max net move (% of range)", minval = 10, maxval = 100, group = gQ, tooltip = "Open-to-close of the range. Big net move = trend, not balance.")
+endSlack   = input.int(24, "Range may end up to N bars before the window ends", minval = 0, maxval = 200, group = gQ, tooltip = "Auto-fit tries every end point in the last N bars of the window and keeps the LONGEST tight range. 24 bars = 2 hours on 5m. Stops a late pre-London move from hiding the range.")
 minTouches = input.int(2, "Min tests of each edge", minval = 1, maxval = 6, group = gQ, tooltip = "Separate visits to the top and bottom of the range. This is what builds the liquidity a sweep goes after.")
 touchPct   = input.float(15, "Edge zone (% of range)", minval = 5, maxval = 40, group = gQ, tooltip = "A bar 'tests' an edge if it trades within this % of the range from the high or low.")
 
@@ -163,25 +164,33 @@ if accStart
 
 if accEnd and array.size(aH) > minAccBars
     n = array.size(aH)
-    // ---- 1. fit the range
+    // ---- 1. fit the range: try each end point in the last `endSlack` bars, keep the longest tight range
     int s0 = 0
-    float hi = array.get(aH, n - 1)
-    float lo = array.get(aL, n - 1)
-    if accMode == "Whole window"
-        hi := array.max(aH)
-        lo := array.min(aL)
-    else
-        s0 := n - 1
+    int e0 = n - 1
+    float hi = array.max(aH)
+    float lo = array.min(aL)
+    if accMode == "Auto-fit (latest tight range)"
         maxH = na(atr1h) ? 1e10 : fitMaxATR * atr1h
-        for i = n - 2 to 0
-            nh = math.max(hi, array.get(aH, i))
-            nl = math.min(lo, array.get(aL, i))
-            if nh - nl > maxH
-                break
-            hi := nh
-            lo := nl
-            s0 := i
-    len = n - s0
+        int bestLen = 0
+        for e = n - 1 to math.max(1, n - 1 - endSlack)
+            float h_ = array.get(aH, e)
+            float l_ = array.get(aL, e)
+            int s_ = e
+            for i = e - 1 to 0
+                nh = math.max(h_, array.get(aH, i))
+                nl = math.min(l_, array.get(aL, i))
+                if nh - nl > maxH
+                    break
+                h_ := nh
+                l_ := nl
+                s_ := i
+            if e - s_ + 1 > bestLen
+                bestLen := e - s_ + 1
+                s0 := s_
+                e0 := e
+                hi := h_
+                lo := l_
+    len = e0 - s0 + 1
     hgt = hi - lo
     // ---- 2. checks
     string why = ""
@@ -189,15 +198,15 @@ if accEnd and array.size(aH) > minAccBars
         why := "tight range only " + str.tostring(len) + " bars"
     else if accMode == "Whole window" and not na(atr1h) and hgt > fitMaxATR * atr1h
         why := "range " + str.tostring(hgt / atr1h, "#.#") + "x 1H ATR"
-    else if hgt > 0 and math.abs(array.get(aC, n - 1) - array.get(aO, s0)) / hgt * 100 > maxNetPct
-        why := "trended " + str.tostring(math.abs(array.get(aC, n - 1) - array.get(aO, s0)) / hgt * 100, "#") + "% of range"
+    else if hgt > 0 and math.abs(array.get(aC, e0) - array.get(aO, s0)) / hgt * 100 > maxNetPct
+        why := "trended " + str.tostring(math.abs(array.get(aC, e0) - array.get(aO, s0)) / hgt * 100, "#") + "% of range"
     else
         zone = hgt * touchPct / 100
         int tH = 0
         int tL = 0
         bool inH = false
         bool inL = false
-        for i = s0 to n - 1
+        for i = s0 to e0
             nowH = array.get(aH, i) >= hi - zone
             nowL = array.get(aL, i) <= lo + zone
             if nowH and not inH
@@ -209,7 +218,7 @@ if accEnd and array.size(aH) > minAccBars
         if tH < minTouches or tL < minTouches
             why := "edges tested " + str.tostring(tH) + "x high / " + str.tostring(tL) + "x low"
     b0 = array.get(aB, s0)
-    bEnd = array.get(aB, n - 1)
+    bEnd = array.get(aB, e0)
     if why != ""
         box.new(b0, hi, bEnd, lo, border_color = color.new(color.gray, 50), border_style = line.style_dashed,
              bgcolor = color.new(color.gray, 96), text = "no accumulation: " + why, text_color = color.gray,
@@ -223,7 +232,7 @@ if accEnd and array.size(aH) > minAccBars
         float step = hgt / rows
         up = array.new<float>(rows, 0.0)
         dn = array.new<float>(rows, 0.0)
-        for i = s0 to n - 1
+        for i = s0 to e0
             bh = array.get(aH, i)
             bl = array.get(aL, i)
             bv = array.get(aV, i)

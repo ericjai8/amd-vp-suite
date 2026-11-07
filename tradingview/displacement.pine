@@ -16,7 +16,7 @@
 // Bright = also broke structure. Faded = displacement without a break.
 // Opening price lines (ET): futures daily open 6pm, midnight open, 9:30 NY open.
 // Session boxes: a box per session that grows with its high and low while the
-// session is live, with the session name in the corner. Times/colors editable.
+// session is live, with the session name just above the box. Times/colors editable.
 // Reading aids: trend background (chart or higher TF), C / R tags on bright
 // displacement (C = with the trend, R = against it), dashboard with the levels
 // that make the next BOS / CHoCH, and a gray "range" tint when breaks keep flipping.
@@ -314,6 +314,10 @@ var array<box> sb1 = array.new<box>()
 var array<box> sb2 = array.new<box>()
 var array<box> sb3 = array.new<box>()
 var array<box> sb4 = array.new<box>()
+var array<label> sl1 = array.new<label>()
+var array<label> sl2 = array.new<label>()
+var array<label> sl3 = array.new<label>()
+var array<label> sl4 = array.new<label>()
 
 in1 = not na(time(timeframe.period, s1Ses, "America/New_York"))
 in2 = not na(time(timeframe.period, s2Ses, "America/New_York"))
@@ -324,25 +328,29 @@ st2 = in2 and not in2[1]
 st3 = in3 and not in3[1]
 st4 = in4 and not in4[1]
 
-sesBox(array<box> arr, bool inS, bool start, string name, color col) =>
+sesBox(array<box> arr, array<label> lbs, bool inS, bool start, string name, color col) =>
     edge = sesBorder ? color.rgb(color.r(col), color.g(col), color.b(col), 40) : na
-    txt = color.rgb(color.r(col), color.g(col), color.b(col), 20)
+    txt = color.rgb(color.r(col), color.g(col), color.b(col), 10)
     if start
-        array.push(arr, box.new(bar_index, high, bar_index, low, border_color = edge, bgcolor = col, text = name,
-             text_color = txt, text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top))
+        array.push(arr, box.new(bar_index, high, bar_index, low, border_color = edge, bgcolor = col))
+        // name sits just above the box, outside it, at the left edge
+        array.push(lbs, label.new(bar_index, high, name, style = label.style_label_lower_left,
+             color = color.new(color.black, 100), textcolor = txt, size = size.tiny))
         if array.size(arr) > sesKeep
             box.delete(array.shift(arr))
+            label.delete(array.shift(lbs))
     else if inS and array.size(arr) > 0
         b = array.get(arr, array.size(arr) - 1)
         box.set_right(b, bar_index)
         box.set_top(b, math.max(box.get_top(b), high))
         box.set_bottom(b, math.min(box.get_bottom(b), low))
+        label.set_y(array.get(lbs, array.size(lbs) - 1), box.get_top(b))
 
 if showSes and s1On
-    sesBox(sb1, in1, st1, s1Nm, s1Col)
+    sesBox(sb1, sl1, in1, st1, s1Nm, s1Col)
 if showSes and s2On
-    sesBox(sb2, in2, st2, s2Nm, s2Col)
+    sesBox(sb2, sl2, in2, st2, s2Nm, s2Col)
 if showSes and s3On
-    sesBox(sb3, in3, st3, s3Nm, s3Col)
+    sesBox(sb3, sl3, in3, st3, s3Nm, s3Col)
 if showSes and s4On
-    sesBox(sb4, in4, st4, s4Nm, s4Col)
+    sesBox(sb4, sl4, in4, st4, s4Nm, s4Col)

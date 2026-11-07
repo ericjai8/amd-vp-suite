@@ -35,7 +35,8 @@ colDn    = input.color(color.new(#ff4081, 0), "Down displacement")
 
 gS = "Structure (BOS / CHoCH)"
 pivLen   = input.int(5, "Swing strength (bars each side)", minval = 2, maxval = 20, group = gS)
-showStr  = input.bool(true, "Mark BOS / CHoCH", group = gS)
+showStr  = input.bool(true, "Mark BOS", group = gS)
+showCh   = input.bool(false, "Mark CHoCH", group = gS, tooltip = "Off = CHoCH lines/tags are hidden. The trend still flips on a CHoCH, so the background, C/R tags and dashboard work the same.")
 showSw   = input.bool(false, "Mark swing highs / lows", group = gS)
 colBosU  = input.color(color.new(color.lime, 10), "BOS up", group = gS, inline = "b")
 colBosD  = input.color(color.new(color.red, 10), "BOS down", group = gS, inline = "b")
@@ -103,14 +104,14 @@ if barstate.isconfirmed
         shDone := true
         brkUp := true
         chUp := trend == -1
-        if showStr
+        if chUp ? showCh : showStr
             markBreak(lastSHb, lastSH, chUp ? "CHoCH" : "BOS", chUp ? colChU : colBosU, true)
         trend := 1
     if not slDone and close < lastSL
         slDone := true
         brkDn := true
         chDn := trend == 1
-        if showStr
+        if chDn ? showCh : showStr
             markBreak(lastSLb, lastSL, chDn ? "CHoCH" : "BOS", chDn ? colChD : colBosD, false)
         trend := -1
 

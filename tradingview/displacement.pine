@@ -21,7 +21,7 @@
 // displacement (C = with the trend, R = against it), dashboard with the levels
 // that make the next BOS / CHoCH, and a gray "range" tint when breaks keep flipping.
 // =====================================================================
-indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 500, max_lines_count = 300, max_labels_count = 400)
+indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 len      = input.int(20, "Compare with last N candles", minval = 5)
 bodyK    = input.float(2.0, "Body size (x median body)", minval = 1.0, step = 0.25)
@@ -31,6 +31,7 @@ needFVG  = input.bool(true, "Must leave a Fair Value Gap")
 needBOS  = input.bool(false, "Must break structure (close beyond swing)")
 showFVG  = input.bool(true, "Draw the FVG")
 fvgBars  = input.int(15, "FVG box length (bars)", minval = 3)
+fvgKeep  = input.int(150, "Keep last N FVG boxes", minval = 10, maxval = 250)
 paintBar = input.bool(true, "Color the displacement candle")
 colUp    = input.color(color.new(#00e5ff, 0), "Up displacement")
 colDn    = input.color(color.new(#ff4081, 0), "Down displacement")
@@ -44,7 +45,7 @@ colBosU  = input.color(color.new(color.lime, 10), "BOS up", group = gS, inline =
 colBosD  = input.color(color.new(color.red, 10), "BOS down", group = gS, inline = "b")
 colChU   = input.color(color.new(#b388ff, 0), "CHoCH up", group = gS, inline = "c")
 colChD   = input.color(color.new(#ff9800, 0), "CHoCH down", group = gS, inline = "c")
-keepStr  = input.int(40, "Keep last N breaks", minval = 5, maxval = 200, group = gS)
+keepStr  = input.int(150, "Keep last N breaks", minval = 5, maxval = 300, group = gS)
 
 gT = "Trend & reading aids"
 htf      = input.timeframe("", "Trend timeframe (blank = chart)", group = gT, tooltip = "Background, C/R tags and dashboard bias use structure from this timeframe. On a 5m chart try 15. Must be the chart timeframe or higher.")
@@ -75,7 +76,7 @@ s4Nm  = input.string("NY PM", "", group = gB, inline = "s4")
 s4Ses = input.session("1330-1600", "", group = gB, inline = "s4")
 s4Col = input.color(color.new(#4caf50, 88), "", group = gB, inline = "s4")
 sesBorder = input.bool(true, "Box border", group = gB)
-sesKeep   = input.int(5, "Keep last N of each session", minval = 1, maxval = 30, group = gB)
+sesKeep   = input.int(20, "Keep last N of each session", minval = 1, maxval = 40, group = gB)
 
 gO = "Opening prices (ET)"
 showDO   = input.bool(true, "Daily open (6:00pm, futures day)", group = gO, inline = "do")
@@ -84,7 +85,7 @@ showMO   = input.bool(true, "Midnight open (12:00am)", group = gO, inline = "mo"
 colMO    = input.color(color.new(color.orange, 10), "", group = gO, inline = "mo")
 showNY   = input.bool(true, "NY open (9:30am)", group = gO, inline = "ny")
 colNY    = input.color(color.new(color.yellow, 10), "", group = gO, inline = "ny")
-keepDays = input.int(3, "Keep lines for last N days", minval = 1, maxval = 20, group = gO)
+keepDays = input.int(10, "Keep lines for last N days", minval = 1, maxval = 30, group = gO)
 
 // ---------------------------------------------------------------- structure
 var float lastSH = na
@@ -188,8 +189,11 @@ if array.size(bBars) > 1
 chop = useChop and flips + 1 >= chopN
 
 bgcolor(not showBG ? na : chop ? color.new(color.gray, 85) : bias == 1 ? color.new(color.lime, 93) : bias == -1 ? color.new(color.red, 93) : na, title = "Trend background")
+var array<label> rngL = array.new<label>()
 if chop and not chop[1]
-    label.new(bar_index, high, "range", style = label.style_label_down, color = color.new(color.gray, 30), textcolor = color.white, size = size.small)
+    array.push(rngL, label.new(bar_index, high, "range", style = label.style_label_down, color = color.new(color.gray, 30), textcolor = color.white, size = size.small))
+    if array.size(rngL) > 40
+        label.delete(array.shift(rngL))
 
 // ---------------------------------------------------------------- displacement
 body   = math.abs(close - open)
@@ -257,10 +261,13 @@ if showDash and barstate.islast
     table.cell(dash, 0, 5, trend == 1 ? "CHoCH down below" : "BOS down below", text_color = color.white, text_size = size.small)
     table.cell(dash, 1, 5, dnLvl, text_color = trend == 1 ? colChD : colBosD, text_size = size.small)
 
+var array<box> fvgArr = array.new<box>()
 if showFVG and dispUp and fvgUp
-    box.new(bar_index - 1, low, bar_index - 1 + fvgBars, high[2], border_color = na, bgcolor = color.new(colUp, 85))
+    array.push(fvgArr, box.new(bar_index - 1, low, bar_index - 1 + fvgBars, high[2], border_color = na, bgcolor = color.new(colUp, 85)))
 if showFVG and dispDn and fvgDn
-    box.new(bar_index - 1, low[2], bar_index - 1 + fvgBars, high, border_color = na, bgcolor = color.new(colDn, 85))
+    array.push(fvgArr, box.new(bar_index - 1, low[2], bar_index - 1 + fvgBars, high, border_color = na, bgcolor = color.new(colDn, 85)))
+while array.size(fvgArr) > fvgKeep
+    box.delete(array.shift(fvgArr))
 
 alertcondition(dispUp, "Up displacement", "Up displacement candle on {{ticker}} ({{interval}})")
 alertcondition(dispDn, "Down displacement", "Down displacement candle on {{ticker}} ({{interval}})")

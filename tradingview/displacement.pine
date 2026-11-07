@@ -15,11 +15,13 @@
 // of the following candle) and is drawn on the displacement candle itself.
 // Bright = also broke structure. Faded = displacement without a break.
 // Opening price lines (ET): futures daily open 6pm, midnight open, 9:30 NY open.
+// Session boxes: a box per session that grows with its high and low while the
+// session is live, with the session name in the corner. Times/colors editable.
 // Reading aids: trend background (chart or higher TF), C / R tags on bright
 // displacement (C = with the trend, R = against it), dashboard with the levels
 // that make the next BOS / CHoCH, and a gray "range" tint when breaks keep flipping.
 // =====================================================================
-indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 300, max_lines_count = 300, max_labels_count = 400)
+indicator("Displacement Candles [MNQ]", shorttitle = "Displacement", overlay = true, max_boxes_count = 500, max_lines_count = 300, max_labels_count = 400)
 
 len      = input.int(20, "Compare with last N candles", minval = 5)
 bodyK    = input.float(2.0, "Body size (x median body)", minval = 1.0, step = 0.25)
@@ -53,6 +55,27 @@ showDash = input.bool(true, "Dashboard", group = gT)
 useChop  = input.bool(true, "Range warning (breaks flipping)", group = gT)
 chopMin  = input.int(60, "Range warning: window (minutes)", minval = 10, group = gT)
 chopN    = input.int(3, "Range warning: flips in window", minval = 2, maxval = 10, group = gT, tooltip = "This many breaks in alternating directions inside the window = range / chop.")
+
+gB = "Session boxes (ET)"
+showSes  = input.bool(true, "Show session boxes", group = gB)
+s1On  = input.bool(true, "", group = gB, inline = "s1")
+s1Nm  = input.string("Asia", "", group = gB, inline = "s1")
+s1Ses = input.session("2000-0000", "", group = gB, inline = "s1")
+s1Col = input.color(color.new(#7e57c2, 88), "", group = gB, inline = "s1")
+s2On  = input.bool(true, "", group = gB, inline = "s2")
+s2Nm  = input.string("London", "", group = gB, inline = "s2")
+s2Ses = input.session("0200-0500", "", group = gB, inline = "s2")
+s2Col = input.color(color.new(#2196f3, 88), "", group = gB, inline = "s2")
+s3On  = input.bool(true, "", group = gB, inline = "s3")
+s3Nm  = input.string("NY AM", "", group = gB, inline = "s3")
+s3Ses = input.session("0930-1200", "", group = gB, inline = "s3")
+s3Col = input.color(color.new(#ff9800, 88), "", group = gB, inline = "s3")
+s4On  = input.bool(true, "", group = gB, inline = "s4")
+s4Nm  = input.string("NY PM", "", group = gB, inline = "s4")
+s4Ses = input.session("1330-1600", "", group = gB, inline = "s4")
+s4Col = input.color(color.new(#4caf50, 88), "", group = gB, inline = "s4")
+sesBorder = input.bool(true, "Box border", group = gB)
+sesKeep   = input.int(5, "Keep last N of each session", minval = 1, maxval = 30, group = gB)
 
 gO = "Opening prices (ET)"
 showDO   = input.bool(true, "Daily open (6:00pm, futures day)", group = gO, inline = "do")
@@ -285,3 +308,41 @@ if showMO and isMO
     newOpen(moL, moT, "Midnight open", colMO)
 if showNY and isNY
     newOpen(nyL, nyT, "NY open", colNY)
+
+// ---------------------------------------------------------------- session boxes
+var array<box> sb1 = array.new<box>()
+var array<box> sb2 = array.new<box>()
+var array<box> sb3 = array.new<box>()
+var array<box> sb4 = array.new<box>()
+
+in1 = not na(time(timeframe.period, s1Ses, "America/New_York"))
+in2 = not na(time(timeframe.period, s2Ses, "America/New_York"))
+in3 = not na(time(timeframe.period, s3Ses, "America/New_York"))
+in4 = not na(time(timeframe.period, s4Ses, "America/New_York"))
+st1 = in1 and not in1[1]
+st2 = in2 and not in2[1]
+st3 = in3 and not in3[1]
+st4 = in4 and not in4[1]
+
+sesBox(array<box> arr, bool inS, bool start, string name, color col) =>
+    edge = sesBorder ? color.rgb(color.r(col), color.g(col), color.b(col), 40) : na
+    txt = color.rgb(color.r(col), color.g(col), color.b(col), 20)
+    if start
+        array.push(arr, box.new(bar_index, high, bar_index, low, border_color = edge, bgcolor = col, text = name,
+             text_color = txt, text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top))
+        if array.size(arr) > sesKeep
+            box.delete(array.shift(arr))
+    else if inS and array.size(arr) > 0
+        b = array.get(arr, array.size(arr) - 1)
+        box.set_right(b, bar_index)
+        box.set_top(b, math.max(box.get_top(b), high))
+        box.set_bottom(b, math.min(box.get_bottom(b), low))
+
+if showSes and s1On
+    sesBox(sb1, in1, st1, s1Nm, s1Col)
+if showSes and s2On
+    sesBox(sb2, in2, st2, s2Nm, s2Col)
+if showSes and s3On
+    sesBox(sb3, in3, st3, s3Nm, s3Col)
+if showSes and s4On
+    sesBox(sb4, in4, st4, s4Nm, s4Col)

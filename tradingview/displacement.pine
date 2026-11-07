@@ -335,7 +335,7 @@ sesBox(array<box> arr, array<label> lbs, bool inS, bool start, string name, colo
         array.push(arr, box.new(bar_index, high, bar_index, low, border_color = edge, bgcolor = col))
         // name sits just above the box, outside it, at the left edge
         array.push(lbs, label.new(bar_index, high, name, style = label.style_label_lower_left,
-             color = color.new(color.black, 100), textcolor = txt, size = size.tiny))
+             color = color.new(color.black, 100), textcolor = txt, size = size.small))
         if array.size(arr) > sesKeep
             box.delete(array.shift(arr))
             label.delete(array.shift(lbs))
